@@ -2,8 +2,57 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 const db = require('./db');
 require('dotenv').config();
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// POST /auth/google — verify Google ID token, create or login user
+router.post('/google', async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ error: 'Missing Google credential' });
+
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    const email = payload.email;
+
+    if (!email) return res.status(400).json({ error: 'Google account has no email' });
+
+    // Check if user exists
+    let result = await db.query('SELECT id, email FROM users WHERE email = $1', [email]);
+    let userId;
+
+    if (result.rows.length > 0) {
+      userId = result.rows[0].id;
+    } else {
+      // Create new user with a random password (Google-only auth)
+      const randomPass = require('crypto').randomBytes(32).toString('hex');
+      const hashed = await bcrypt.hash(randomPass, 10);
+      const insertResult = await db.query(
+        'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id',
+        [email, hashed]
+      );
+      userId = insertResult.rows[0].id;
+    }
+
+    const token = jwt.sign(
+      { id: userId, email },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.cookie('token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.json({ success: true, user: { id: userId, email } });
+  } catch (err) {
+    console.error('Google auth error:', err);
+    res.status(401).json({ error: 'Invalid Google credential' });
+  }
+});
 
 // POST /auth/signup
 router.post('/signup', async (req, res) => {

@@ -149,6 +149,25 @@ html, body {
 .btn-arrow { transition: transform 0.2s; }
 .btn-primary:hover .btn-arrow { transform: translateX(4px); }
 
+/* ── Auth Divider & Google Sign-In ────────────────────────────── */
+.auth-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 4px 0;
+}
+.auth-divider::before, .auth-divider::after {
+  content: ''; flex: 1; height: 1px;
+  background: var(--border-bright);
+}
+.auth-divider span {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase;
+}
+
+.google-signin-wrapper {
+  display: flex; justify-content: center;
+  min-height: 44px;
+}
+
 /* ── APP SCREEN ───────────────────────────────────────────────── */
 #app-screen { flex-direction: column; overflow: hidden; }
 

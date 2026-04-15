@@ -112,6 +112,7 @@ const leaveStreamBtn   = document.getElementById('leave-stream');
 const streamControls   = document.getElementById('stream-controls');
 const streamToggleMicBtn  = document.getElementById('stream-toggle-mic');
 const streamToggleCamBtn  = document.getElementById('stream-toggle-cam');
+const streamToggleScreenBtn = document.getElementById('stream-toggle-screen');
 const streamInviteBtn  = document.getElementById('stream-invite-btn');
 const streamViewerCount= document.getElementById('stream-viewer-count');
 const streamInviteModal= document.getElementById('stream-invite-modal');
@@ -147,6 +148,48 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     signupError.textContent = '';
   });
 });
+
+// ── GOOGLE SIGN-IN ────────────────────────────────────────────────────────────
+function initGoogleSignIn() {
+  if (typeof google === 'undefined' || !google.accounts) {
+    // GIS script not loaded yet — retry after a short delay
+    setTimeout(initGoogleSignIn, 500);
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: '587752196180-tlu3l06kmtl2655sd6fpa74gm4ka2c3h.apps.googleusercontent.com',
+    callback: handleGoogleCredential,
+  });
+  google.accounts.id.renderButton(
+    document.getElementById('google-signin-btn-login'),
+    { theme: 'filled_black', size: 'large', width: '100%', text: 'continue_with' }
+  );
+  google.accounts.id.renderButton(
+    document.getElementById('google-signin-btn-signup'),
+    { theme: 'filled_black', size: 'large', width: '100%', text: 'signup_with' }
+  );
+}
+
+async function handleGoogleCredential(response) {
+  try {
+    const res = await fetch('/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: response.credential })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      loginError.textContent = data.error || 'Google sign-in failed';
+      return;
+    }
+    currentUser = data.user;
+    enterApp();
+  } catch {
+    loginError.textContent = 'Google sign-in failed. Try again.';
+  }
+}
+
+initGoogleSignIn();
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 loginForm.addEventListener('submit', async (e) => {
@@ -308,6 +351,19 @@ function connectSocket() {
   socket.on('group:created', ({ roomId, participants }) => {
     console.log('[GROUP] Room created:', roomId);
     currentRoomId = roomId;
+    // If this user was the partner in a 1-to-1→group conversion, migrate peer state
+    if (inCallWithSocketId && peerConnection) {
+      const partnerSocket = inCallWithSocketId;
+      const partnerEmail = remoteLabel.textContent || 'Unknown';
+      groupPeers.set(partnerSocket, {
+        pc: peerConnection,
+        email: partnerEmail,
+        remoteDescSet: true,
+        iceBuffer: []
+      });
+      peerConnection = null;
+      inCallWithSocketId = null;
+    }
     switchToGroupLayout();
     // Open the invite modal now that currentRoomId is confirmed
     if (pendingOpenParticipantModal) {
@@ -332,9 +388,10 @@ function connectSocket() {
     currentRoomId = roomId;
     try { await startLocalStream(callMode); } catch { setStatus('Media blocked.'); return; }
     switchToGroupLayout();
-    // Create peer connections to all existing participants
+    // Do NOT create offers here — existing participants will send offers to us
+    // via group:participant-joined. This avoids signaling collision on rejoin.
     for (const p of participants) {
-      await createGroupPeerConnection(p.socketId, p.email, true);
+      await createGroupPeerConnection(p.socketId, p.email, false);
     }
     callControls.classList.remove('hidden');
     setStatus('In group call');
@@ -446,6 +503,8 @@ function connectSocket() {
     if (!watchingStreamFrom) return;
     streamPC = new RTCPeerConnection({ iceServers });
     streamPC.ontrack = (e) => {
+      // Stream viewer video must NOT be mirrored
+      streamVideo.classList.remove('mirror-self');
       if (e.streams && e.streams[0]) {
         streamVideo.srcObject = e.streams[0];
       } else {
@@ -775,6 +834,8 @@ function createPeerConnection(targetSocketId) {
     // Always attach the remote stream so audio plays even in audio-only calls.
     // The remoteVideo element is hidden via CSS for audio calls but still outputs audio.
     remoteIdle.style.display = 'none';
+    // Remote video must NEVER be mirrored — only local self-view uses mirror
+    remoteVideo.classList.remove('mirror-self');
     if (event.streams && event.streams[0]) {
       if (remoteVideo.srcObject !== event.streams[0]) {
         remoteVideo.srcObject = event.streams[0];
@@ -986,6 +1047,10 @@ function hangupCall() {
   localVideo.srcObject = null;
   remoteVideo.srcObject = null;
   groupLocalVideo.srcObject = null;
+  // Clean up mirror classes
+  remoteVideo.classList.remove('mirror-self');
+  localVideo.classList.remove('mirror-self');
+  groupLocalVideo.classList.remove('mirror-self');
   localIdle.style.display = '';
   remoteIdle.style.display = '';
   callControls.classList.add('hidden');
@@ -1113,6 +1178,8 @@ function createGroupPeerObj(socketId, email) {
       const vid = document.createElement('video');
       vid.autoplay = true;
       vid.playsInline = true;
+      // Remote videos must NOT be mirrored — ensure no mirror class
+      vid.classList.remove('mirror-self');
       tile.appendChild(vid);
       const label = document.createElement('div');
       label.className = 'video-label';
@@ -1191,9 +1258,17 @@ function hangupGroupCall() {
   }
   groupPeers.clear();
   currentRoomId = null;
+  // Also clean up any leftover 1-to-1 state (from call→group conversion)
+  if (peerConnection) { peerConnection.close(); peerConnection = null; }
+  inCallWithSocketId = null;
+  iceCandidateBuffer = [];
+  remoteDescSet = false;
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   localVideo.srcObject = null;
   groupLocalVideo.srcObject = null;
+  remoteVideo.classList.remove('mirror-self');
+  localVideo.classList.remove('mirror-self');
+  groupLocalVideo.classList.remove('mirror-self');
   callControls.classList.add('hidden');
   videoGroup.classList.add('hidden');
   noCallState.classList.remove('hidden');
@@ -1284,6 +1359,75 @@ streamToggleCamBtn.addEventListener('click', () => {
   streamCamEnabled = !streamCamEnabled;
   if (liveStream) liveStream.getVideoTracks().forEach(t => { t.enabled = streamCamEnabled; });
   streamToggleCamBtn.classList.toggle('muted', !streamCamEnabled);
+});
+
+// ── Stream screen share toggle (switch between camera and screen during live) ─
+streamToggleScreenBtn.addEventListener('click', async () => {
+  if (!isStreaming || !liveStream) return;
+
+  if (streamMode === 'screen') {
+    // Currently screen sharing — switch back to camera
+    try {
+      const camStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true
+      });
+      const newVideoTrack = camStream.getVideoTracks()[0];
+      const newAudioTrack = camStream.getAudioTracks()[0];
+
+      // Replace tracks in all viewer peer connections
+      for (const [, pc] of streamViewerPCs) {
+        const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        const audioSender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+        if (videoSender && newVideoTrack) await videoSender.replaceTrack(newVideoTrack);
+        if (audioSender && newAudioTrack) await audioSender.replaceTrack(newAudioTrack);
+      }
+
+      // Stop old tracks and swap local stream
+      liveStream.getTracks().forEach(t => t.stop());
+      liveStream = camStream;
+      streamMode = 'camera';
+      remoteVideo.srcObject = liveStream;
+      remoteVideo.classList.add('mirror-self');
+      streamToggleScreenBtn.classList.remove('active-share');
+      streamToggleCamBtn.classList.remove('hidden');
+    } catch { setStatus('Camera access denied.'); }
+  } else {
+    // Currently camera — switch to screen share
+    try {
+      const screenStr = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' },
+        audio: true
+      });
+      const newVideoTrack = screenStr.getVideoTracks()[0];
+      const newAudioTrack = screenStr.getAudioTracks().length ? screenStr.getAudioTracks()[0] : null;
+
+      newVideoTrack.onended = () => {
+        // User stopped screen share via browser UI — switch back to camera
+        streamToggleScreenBtn.click();
+      };
+
+      // Replace tracks in all viewer peer connections
+      for (const [, pc] of streamViewerPCs) {
+        const videoSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (videoSender) await videoSender.replaceTrack(newVideoTrack);
+        if (newAudioTrack) {
+          const audioSender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+          if (audioSender) await audioSender.replaceTrack(newAudioTrack);
+        }
+      }
+
+      // Stop old video tracks and swap local stream
+      liveStream.getVideoTracks().forEach(t => t.stop());
+      if (newAudioTrack) liveStream.getAudioTracks().forEach(t => t.stop());
+      liveStream = screenStr;
+      streamMode = 'screen';
+      remoteVideo.srcObject = liveStream;
+      remoteVideo.classList.remove('mirror-self');
+      streamToggleScreenBtn.classList.add('active-share');
+      streamToggleCamBtn.classList.add('hidden');
+    } catch { setStatus('Screen share denied.'); }
+  }
 });
 
 // ── Stream invite (streamer invites a viewer) ─────────────────────────────────

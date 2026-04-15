@@ -19,7 +19,7 @@ app.use('/auth', authRoutes);
 app.use('/chat', chatRoutes);
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// ─── ICE / TURN config endpoint (auth-gated) ──────────────────────────────────
+// ─── ICE / TURN config endpoint (auth-gated here) ──────────────────────────────────
 app.get('/config/ice', (req, res) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
