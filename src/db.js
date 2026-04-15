@@ -28,6 +28,20 @@ async function initDb() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS private_messages (
+      id           SERIAL PRIMARY KEY,
+      sender_id    INTEGER NOT NULL,
+      sender_email VARCHAR(255) NOT NULL,
+      receiver_id  INTEGER NOT NULL,
+      content      TEXT NOT NULL,
+      created_at   TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_pm_participants
+    ON private_messages (sender_id, receiver_id)
+  `);
   console.log('PostgreSQL tables ready.');
 }
 

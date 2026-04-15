@@ -33,4 +33,27 @@ router.get('/history', requireAuth, async (req, res) => {
   }
 });
 
+// GET /chat/dm/history/:userId — last 100 DMs with a specific user
+router.get('/dm/history/:userId', requireAuth, async (req, res) => {
+  const myId = req.user.id;
+  const otherId = parseInt(req.params.userId);
+  if (isNaN(otherId)) return res.status(400).json({ error: 'Invalid userId' });
+  try {
+    const result = await db.query(
+      `SELECT id, sender_id, sender_email, receiver_id, content,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+       FROM private_messages
+       WHERE (sender_id = $1 AND receiver_id = $2)
+          OR (sender_id = $2 AND receiver_id = $1)
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [myId, otherId]
+    );
+    res.json({ messages: result.rows.reverse() });
+  } catch (err) {
+    console.error('chat/dm/history error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NEXUS — Peer Calling</title>
+  <title>NEXUS — Real-Time Communication</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css" />
@@ -21,9 +21,9 @@
   <div class="auth-card">
     <div class="auth-logo">
       <span class="logo-icon">◈</span>
-      <span class="logo-text">NEXUS</span>
+      <span class="logo-text">Bro-Media</span>
     </div>
-    <p class="auth-tagline">Peer-to-peer calling. No noise.</p>
+    <p class="auth-tagline">Real-time communication. No noise.</p>
 
     <div class="tab-row">
       <button class="tab-btn active" data-tab="login">Sign In</button>
@@ -61,7 +61,7 @@
 <!-- ── MAIN APP SCREEN ─────────────────────────────────────────── -->
 <div id="app-screen" class="screen">
   <header class="app-header">
-    <div class="header-logo">◈ NEXUS</div>
+    <div class="header-logo">◈ Bro-Media</div>
     <div class="header-user">
       <span class="user-dot"></span>
       <span id="header-email"></span>
@@ -82,9 +82,22 @@
     </section>
 
     <!-- Video Panel -->
-    <section class="panel video-panel">
-      <div class="video-grid">
-        <div class="video-wrapper local-wrapper">
+    <section class="panel video-panel" id="video-panel">
+      <!-- No-call idle state -->
+      <div id="no-call-state" class="no-call-state">
+        <span class="idle-icon-large">⬡</span>
+        <span>Select a user to start a call</span>
+      </div>
+
+      <!-- 1-to-1 PiP Layout -->
+      <div id="video-1to1" class="video-layout-1to1 hidden">
+        <video id="remote-video" autoplay playsinline></video>
+        <div class="video-label" id="remote-label">REMOTE</div>
+        <div class="video-idle-state" id="remote-idle">
+          <span class="idle-icon">⬡</span>
+          <span>Waiting for connection…</span>
+        </div>
+        <div class="pip-container" id="pip-container">
           <video id="local-video" autoplay muted playsinline></video>
           <div class="video-label">YOU</div>
           <div class="video-idle-state" id="local-idle">
@@ -92,14 +105,40 @@
             <span>Camera off</span>
           </div>
         </div>
-        <div class="video-wrapper remote-wrapper">
-          <video id="remote-video" autoplay playsinline></video>
-          <div class="video-label" id="remote-label">REMOTE</div>
-          <div class="video-idle-state" id="remote-idle">
-            <span class="idle-icon">⬡</span>
-            <span>No active call</span>
-          </div>
+      </div>
+
+      <!-- Group Grid Layout -->
+      <div id="video-group" class="video-layout-group hidden">
+        <!-- Local video tile in group -->
+        <div class="group-video-tile" id="group-local-tile">
+          <video id="group-local-video" autoplay muted playsinline></video>
+          <div class="video-label">YOU</div>
         </div>
+        <!-- Remote tiles added dynamically -->
+      </div>
+
+      <!-- Stream Viewer -->
+      <div id="stream-viewer" class="stream-viewer hidden">
+        <div class="stream-badge">🔴 LIVE</div>
+        <video id="stream-video" autoplay playsinline></video>
+        <div class="stream-info">
+          <span id="stream-label">Stream</span>
+          <button id="leave-stream" class="btn-ghost">LEAVE STREAM</button>
+        </div>
+      </div>
+
+      <!-- Stream Controls (visible only while broadcasting) -->
+      <div id="stream-controls" class="stream-controls hidden">
+        <button id="stream-toggle-mic" class="ctrl-btn" title="Toggle Mic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <button id="stream-toggle-cam" class="ctrl-btn" title="Toggle Camera">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        </button>
+        <button id="stream-invite-btn" class="ctrl-btn" title="Invite Viewer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+        </button>
+        <div id="stream-viewer-count" class="stream-viewer-count">&#128065; 0</div>
       </div>
 
       <!-- Call Controls -->
@@ -109,6 +148,12 @@
         </button>
         <button id="toggle-cam" class="ctrl-btn" title="Toggle Camera">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        </button>
+        <button id="toggle-screen" class="ctrl-btn" title="Share Screen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </button>
+        <button id="add-participant-btn" class="ctrl-btn" title="Add Participant">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
         </button>
         <button id="hangup-btn" class="ctrl-btn hangup" title="End Call">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07C9.44 17.29 7.76 15.32 6.69 13"/><path d="M23 1L1 23"/></svg>
@@ -120,28 +165,45 @@
 
     <!-- Chat Panel -->
     <section class="panel chat-panel">
-      <div class="panel-header">
-        <h2>CHAT</h2>
-        <div class="pulse-dot"></div>
+      <div class="chat-tabs">
+        <button class="chat-tab active" data-chat="public" id="public-tab-btn">PUBLIC</button>
+        <button class="chat-tab hidden" data-chat="dm" id="dm-tab-btn">DM</button>
       </div>
-      <div id="chat-messages" class="chat-messages">
-        <div class="chat-empty">Send a message to everyone online.</div>
+
+      <!-- Public chat -->
+      <div id="public-chat" class="chat-content active">
+        <div id="chat-messages" class="chat-messages">
+          <div class="chat-empty">Send a message to everyone online.</div>
+        </div>
+        <div class="chat-input-row">
+          <input id="chat-input" type="text" class="chat-input" placeholder="Type a message…" maxlength="2000" autocomplete="off" />
+          <button id="chat-send" class="chat-send-btn" title="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
       </div>
-      <div class="chat-input-row">
-        <input
-          id="chat-input"
-          type="text"
-          class="chat-input"
-          placeholder="Type a message…"
-          maxlength="2000"
-          autocomplete="off"
-        />
-        <button id="chat-send" class="chat-send-btn" title="Send">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="22" y1="2" x2="11" y2="13"/>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-          </svg>
-        </button>
+
+      <!-- DM chat -->
+      <div id="dm-chat" class="chat-content">
+        <div class="dm-header" id="dm-header">
+          <span id="dm-partner-name">Direct Message</span>
+          <button id="dm-close" class="btn-ghost-sm">✕</button>
+        </div>
+        <div id="dm-messages" class="chat-messages">
+          <div class="chat-empty">Start a private conversation.</div>
+        </div>
+        <div class="chat-input-row">
+          <input id="dm-input" type="text" class="chat-input" placeholder="Type a private message…" maxlength="2000" autocomplete="off" />
+          <button id="dm-send" class="chat-send-btn" title="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </section>
   </main>
@@ -152,9 +214,9 @@
   <div class="modal-card">
     <div class="modal-ring">
       <div class="ring-pulse"></div>
-      <span class="ring-icon">📞</span>
+      <span class="ring-icon" id="incoming-icon">📞</span>
     </div>
-    <p class="modal-title">Incoming Call</p>
+    <p class="modal-title" id="incoming-type-label">Incoming Call</p>
     <p id="caller-name" class="modal-caller"></p>
     <div class="modal-actions">
       <button id="accept-call" class="modal-btn accept">ACCEPT</button>
@@ -162,6 +224,83 @@
     </div>
   </div>
 </div>
+
+<!-- ── INCOMING GROUP INVITE MODAL ──────────────────────────────── -->
+<div id="group-invite-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-ring">
+      <div class="ring-pulse"></div>
+      <span class="ring-icon">👥</span>
+    </div>
+    <p class="modal-title">Group Call Invitation</p>
+    <p id="group-inviter-name" class="modal-caller"></p>
+    <p class="modal-sub" id="group-participant-count"></p>
+    <div class="modal-actions">
+      <button id="accept-group" class="modal-btn accept">JOIN</button>
+      <button id="reject-group" class="modal-btn reject">DECLINE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ADD PARTICIPANT MODAL ────────────────────────────────────── -->
+<div id="add-participant-modal" class="modal hidden">
+  <div class="modal-card modal-card-wide">
+    <p class="modal-title">ADD PARTICIPANT</p>
+    <div id="invite-users-list" class="invite-users-list"></div>
+    <div class="modal-actions">
+      <button id="close-invite-modal" class="modal-btn reject" style="flex:1">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── INCOMING STREAM INVITE MODAL (shown to invited viewer) ──────────── -->
+<div id="stream-invited-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-ring">
+      <div class="ring-pulse"></div>
+      <span class="ring-icon">&#128308;</span>
+    </div>
+    <p class="modal-title">LIVE STREAM INVITE</p>
+    <p id="stream-inviter-name" class="modal-caller"></p>
+    <p class="modal-sub">is inviting you to watch their live stream.</p>
+    <div class="modal-actions">
+      <button id="accept-stream-invite" class="modal-btn accept">WATCH</button>
+      <button id="reject-stream-invite" class="modal-btn reject">DECLINE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── INVITE VIEWER MODAL (shown to streamer to pick a user) ───────────── -->
+<div id="stream-invite-modal" class="modal hidden">
+  <div class="modal-card modal-card-wide">
+    <p class="modal-title">INVITE VIEWER</p>
+    <div id="stream-invite-users-list" class="invite-users-list"></div>
+    <div class="modal-actions">
+      <button id="close-stream-invite-modal" class="modal-btn reject" style="flex:1">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── GO LIVE MODAL ────────────────────────────────────────────── -->
+<div id="go-live-modal" class="modal hidden">
+  <div class="modal-card">
+    <p class="modal-title">GO LIVE</p>
+    <p class="modal-sub">Choose what to broadcast</p>
+    <div class="modal-actions" style="flex-direction:column; gap:8px;">
+      <button id="live-camera" class="modal-btn accept">📷 Camera</button>
+      <button id="live-screen" class="modal-btn accept">🖥 Screen</button>
+      <button id="live-cancel" class="modal-btn reject">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── GO LIVE BUTTON (floating) ────────────────────────────────── -->
+<button id="go-live-btn" class="go-live-fab hidden" title="Go Live">
+  <span>🔴 GO LIVE</span>
+</button>
+<button id="stop-live-btn" class="stop-live-fab hidden" title="Stop Stream">
+  <span>⏹ STOP LIVE</span>
+</button>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/js/app.js"></script>

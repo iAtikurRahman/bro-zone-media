@@ -61,6 +61,28 @@ app.get('/config/ice', (req, res) => {
 const onlineUsers = new Map();
 // ─── Active Call Pairs: socketId → partnerSocketId ────────────────────────────
 const callPairs   = new Map();
+// ─── Group Call Rooms: roomId → { participants: Set<socketId>, host: socketId }
+const callRooms   = new Map();
+// ─── Active Live Streams: socketId → { viewers: Set<socketId> }
+const activeStreams = new Map();
+
+function generateRoomId() {
+  return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function isInGroupCall(socketId) {
+  for (const [, room] of callRooms) {
+    if (room.participants.has(socketId)) return true;
+  }
+  return false;
+}
+
+function getRoomForSocket(socketId) {
+  for (const [roomId, room] of callRooms) {
+    if (room.participants.has(socketId)) return roomId;
+  }
+  return null;
+}
 
 // ─── HTTP server ─────────────────────────────────────────────────────────────
 const PORT       = parseInt(process.env.PORT || '3000');
@@ -102,18 +124,19 @@ io.on('connection', (socket) => {
   onlineUsers.set(socket.id, { userId, email });
   broadcastOnlineUsers();
 
-  socket.on('call:offer', ({ targetSocketId, offer }) => {
+  socket.on('call:offer', ({ targetSocketId, offer, callType }) => {
     const caller = onlineUsers.get(socket.id);
-    console.log(`📞 call:offer  ${email} → ${targetSocketId}`);
+    console.log(`📞 call:offer  ${email} → ${targetSocketId} [${callType || 'video'}]`);
     // Reject immediately if target is already in a call
-    if (callPairs.has(targetSocketId)) {
+    if (callPairs.has(targetSocketId) || isInGroupCall(targetSocketId)) {
       socket.emit('call:busy', { targetSocketId });
       return;
     }
     io.to(targetSocketId).emit('call:incoming', {
       from: socket.id,
       callerEmail: caller ? caller.email : email,
-      offer
+      offer,
+      callType: callType || 'video'
     });
   });
 
@@ -178,6 +201,193 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ─── Private DM ────────────────────────────────────────────────────────────
+  socket.on('dm:send', async ({ targetUserId, content }) => {
+    if (!content || typeof content !== 'string') return;
+    const text = content.trim().slice(0, 2000);
+    if (!text || !targetUserId) return;
+    try {
+      const result = await db.query(
+        `INSERT INTO private_messages (sender_id, sender_email, receiver_id, content)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, sender_id, sender_email, receiver_id, content,
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at`,
+        [userId, email, targetUserId, text]
+      );
+      const msg = result.rows[0];
+      socket.emit('dm:message', msg);
+      const targetEntry = [...onlineUsers.entries()].find(([, u]) => u.userId === targetUserId);
+      if (targetEntry) {
+        io.to(targetEntry[0]).emit('dm:message', msg);
+      }
+    } catch (err) {
+      console.error('dm:send DB error:', err);
+    }
+  });
+
+  // ─── Group Calls ───────────────────────────────────────────────────────────
+  socket.on('group:create', ({ partnerSocketId }) => {
+    const roomId = generateRoomId();
+    const room = { participants: new Set([socket.id, partnerSocketId]), host: socket.id };
+    callRooms.set(roomId, room);
+    callPairs.delete(socket.id);
+    callPairs.delete(partnerSocketId);
+    const participantList = [...room.participants].map(pid => ({
+      socketId: pid,
+      email: onlineUsers.get(pid)?.email || 'Unknown'
+    }));
+    io.to(socket.id).emit('group:created', { roomId, participants: participantList });
+    io.to(partnerSocketId).emit('group:created', { roomId, participants: participantList });
+    broadcastOnlineUsers();
+  });
+
+  socket.on('group:invite', ({ roomId, targetSocketId }) => {
+    const room = callRooms.get(roomId);
+    if (!room || !room.participants.has(socket.id)) return;
+    if (callPairs.has(targetSocketId) || isInGroupCall(targetSocketId)) {
+      socket.emit('call:busy', { targetSocketId });
+      return;
+    }
+    const inviter = onlineUsers.get(socket.id);
+    io.to(targetSocketId).emit('group:incoming', {
+      roomId,
+      from: socket.id,
+      inviterEmail: inviter ? inviter.email : 'Unknown',
+      participantCount: room.participants.size
+    });
+  });
+
+  socket.on('group:accept', ({ roomId }) => {
+    const room = callRooms.get(roomId);
+    if (!room) return;
+    const existingParticipants = [...room.participants];
+    room.participants.add(socket.id);
+    existingParticipants.forEach(pid => {
+      io.to(pid).emit('group:participant-joined', {
+        roomId,
+        socketId: socket.id,
+        email: onlineUsers.get(socket.id)?.email || 'Unknown'
+      });
+    });
+    const participantInfo = existingParticipants.map(pid => ({
+      socketId: pid,
+      email: onlineUsers.get(pid)?.email || 'Unknown'
+    }));
+    socket.emit('group:joined', { roomId, participants: participantInfo });
+    broadcastOnlineUsers();
+  });
+
+  socket.on('group:reject', ({ roomId }) => {
+    const room = callRooms.get(roomId);
+    if (!room) return;
+    room.participants.forEach(pid => {
+      io.to(pid).emit('group:invite-rejected', {
+        socketId: socket.id,
+        email: onlineUsers.get(socket.id)?.email || 'Unknown'
+      });
+    });
+  });
+
+  socket.on('group:offer', ({ roomId, targetSocketId, offer }) => {
+    io.to(targetSocketId).emit('group:offer', { roomId, from: socket.id, offer });
+  });
+
+  socket.on('group:answer', ({ roomId, targetSocketId, answer }) => {
+    io.to(targetSocketId).emit('group:answer', { roomId, from: socket.id, answer });
+  });
+
+  socket.on('group:ice', ({ roomId, targetSocketId, candidate }) => {
+    io.to(targetSocketId).emit('group:ice', { roomId, from: socket.id, candidate });
+  });
+
+  socket.on('group:leave', ({ roomId }) => {
+    const room = callRooms.get(roomId);
+    if (!room) return;
+    room.participants.delete(socket.id);
+    if (room.participants.size <= 1) {
+      const lastPerson = [...room.participants][0];
+      if (lastPerson) io.to(lastPerson).emit('group:dissolved', { roomId });
+      callRooms.delete(roomId);
+    } else {
+      room.participants.forEach(pid => {
+        io.to(pid).emit('group:participant-left', { roomId, socketId: socket.id });
+      });
+    }
+    broadcastOnlineUsers();
+  });
+
+  // ─── Screen Sharing ────────────────────────────────────────────────────────
+  socket.on('screen:sharing', ({ targetSocketId, sharing }) => {
+    io.to(targetSocketId).emit('screen:sharing', { from: socket.id, sharing });
+  });
+
+  socket.on('screen:sharing-group', ({ roomId, sharing }) => {
+    const room = callRooms.get(roomId);
+    if (!room) return;
+    room.participants.forEach(pid => {
+      if (pid !== socket.id) {
+        io.to(pid).emit('screen:sharing', { from: socket.id, sharing });
+      }
+    });
+  });
+
+  // ─── Live Streaming ────────────────────────────────────────────────────────
+  socket.on('stream:start', () => {
+    activeStreams.set(socket.id, { viewers: new Set() });
+    broadcastOnlineUsers();
+  });
+
+  socket.on('stream:stop', () => {
+    const stream = activeStreams.get(socket.id);
+    if (stream) {
+      stream.viewers.forEach(vid => {
+        io.to(vid).emit('stream:ended', { streamerSocketId: socket.id });
+      });
+    }
+    activeStreams.delete(socket.id);
+    broadcastOnlineUsers();
+  });
+
+  socket.on('stream:watch', ({ streamerSocketId }) => {
+    const stream = activeStreams.get(streamerSocketId);
+    if (!stream) return;
+    stream.viewers.add(socket.id);
+    io.to(streamerSocketId).emit('stream:viewer-joined', {
+      viewerSocketId: socket.id,
+      viewerEmail: onlineUsers.get(socket.id)?.email || 'Unknown'
+    });
+  });
+
+  socket.on('stream:offer', ({ targetSocketId, offer }) => {
+    io.to(targetSocketId).emit('stream:offer', { from: socket.id, offer });
+  });
+
+  socket.on('stream:answer', ({ targetSocketId, answer }) => {
+    io.to(targetSocketId).emit('stream:answer', { from: socket.id, answer });
+  });
+
+  socket.on('stream:ice', ({ targetSocketId, candidate }) => {
+    io.to(targetSocketId).emit('stream:ice', { from: socket.id, candidate });
+  });
+
+  socket.on('stream:invite', ({ targetSocketId }) => {
+    if (!activeStreams.has(socket.id)) return; // only active streamers can invite
+    const inviter = onlineUsers.get(socket.id);
+    io.to(targetSocketId).emit('stream:invited', {
+      streamerSocketId: socket.id,
+      streamerEmail: inviter ? inviter.email : 'Unknown'
+    });
+  });
+
+  socket.on('stream:leave', ({ streamerSocketId }) => {
+    const stream = activeStreams.get(streamerSocketId);
+    if (stream) {
+      stream.viewers.delete(socket.id);
+      io.to(streamerSocketId).emit('stream:viewer-left', { viewerSocketId: socket.id });
+    }
+  });
+
+  // ─── Disconnect ────────────────────────────────────────────────────────────
   socket.on('disconnect', () => {
     console.log(`❌ DISCONNECTED  ${email} [${socket.id}]`);
     // Notify the call partner if this user was in an active call
@@ -186,6 +396,36 @@ io.on('connection', (socket) => {
       callPairs.delete(socket.id);
       callPairs.delete(partner);
       io.to(partner).emit('call:hangup', { from: socket.id });
+    }
+    // Clean up group calls
+    for (const [roomId, room] of callRooms) {
+      if (room.participants.has(socket.id)) {
+        room.participants.delete(socket.id);
+        if (room.participants.size <= 1) {
+          const lastPerson = [...room.participants][0];
+          if (lastPerson) io.to(lastPerson).emit('group:dissolved', { roomId });
+          callRooms.delete(roomId);
+        } else {
+          room.participants.forEach(pid => {
+            io.to(pid).emit('group:participant-left', { roomId, socketId: socket.id });
+          });
+        }
+      }
+    }
+    // Clean up streams
+    const stream = activeStreams.get(socket.id);
+    if (stream) {
+      stream.viewers.forEach(vid => {
+        io.to(vid).emit('stream:ended', { streamerSocketId: socket.id });
+      });
+      activeStreams.delete(socket.id);
+    }
+    // Remove as viewer from any streams
+    for (const [streamerSid, s] of activeStreams) {
+      if (s.viewers.has(socket.id)) {
+        s.viewers.delete(socket.id);
+        io.to(streamerSid).emit('stream:viewer-left', { viewerSocketId: socket.id });
+      }
     }
     onlineUsers.delete(socket.id);
     broadcastOnlineUsers();
@@ -197,7 +437,10 @@ function broadcastOnlineUsers() {
     socketId,
     email:  u.email,
     userId: u.userId,
-    inCall: callPairs.has(socketId)
+    inCall: callPairs.has(socketId) || isInGroupCall(socketId),
+    inGroupCall: isInGroupCall(socketId),
+    groupRoomId: getRoomForSocket(socketId),
+    isStreaming: activeStreams.has(socketId)
   }));
   io.emit('users:online', users);
 }
