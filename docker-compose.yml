@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    container_name: nexus-chat
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      TURN_SERVER_URL: ${TURN_SERVER_URL}
+      TURN_USERNAME: ${TURN_USERNAME}
+      TURN_PASSWORD: ${TURN_PASSWORD}

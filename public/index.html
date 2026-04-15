@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXUS — Peer Calling</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<!-- ── AUTH SCREEN ────────────────────────────────────────────── -->
+<div id="auth-screen" class="screen active">
+  <div class="auth-bg">
+    <div class="grid-overlay"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+  </div>
+
+  <div class="auth-card">
+    <div class="auth-logo">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">NEXUS</span>
+    </div>
+    <p class="auth-tagline">Peer-to-peer calling. No noise.</p>
+
+    <div class="tab-row">
+      <button class="tab-btn active" data-tab="login">Sign In</button>
+      <button class="tab-btn" data-tab="signup">Sign Up</button>
+    </div>
+
+    <form id="login-form" class="auth-form active">
+      <div class="field">
+        <label>EMAIL</label>
+        <input type="email" id="login-email" placeholder="you@domain.com" autocomplete="email" />
+      </div>
+      <div class="field">
+        <label>PASSWORD</label>
+        <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <div id="login-error" class="form-error"></div>
+      <button type="submit" class="btn-primary">CONNECT <span class="btn-arrow">→</span></button>
+    </form>
+
+    <form id="signup-form" class="auth-form">
+      <div class="field">
+        <label>EMAIL</label>
+        <input type="email" id="signup-email" placeholder="you@domain.com" autocomplete="email" />
+      </div>
+      <div class="field">
+        <label>PASSWORD</label>
+        <input type="password" id="signup-password" placeholder="min. 6 characters" autocomplete="new-password" />
+      </div>
+      <div id="signup-error" class="form-error"></div>
+      <button type="submit" class="btn-primary">CREATE ACCOUNT <span class="btn-arrow">→</span></button>
+    </form>
+  </div>
+</div>
+
+<!-- ── MAIN APP SCREEN ─────────────────────────────────────────── -->
+<div id="app-screen" class="screen">
+  <header class="app-header">
+    <div class="header-logo">◈ NEXUS</div>
+    <div class="header-user">
+      <span class="user-dot"></span>
+      <span id="header-email"></span>
+    </div>
+    <button id="logout-btn" class="btn-ghost">SIGN OUT</button>
+  </header>
+
+  <main class="app-main">
+    <!-- Users Panel -->
+    <section class="panel users-panel">
+      <div class="panel-header">
+        <h2>ONLINE <span id="user-count" class="count-badge">0</span></h2>
+        <div class="pulse-dot"></div>
+      </div>
+      <div id="users-list" class="users-list">
+        <div class="empty-state">Waiting for others to connect…</div>
+      </div>
+    </section>
+
+    <!-- Video Panel -->
+    <section class="panel video-panel">
+      <div class="video-grid">
+        <div class="video-wrapper local-wrapper">
+          <video id="local-video" autoplay muted playsinline></video>
+          <div class="video-label">YOU</div>
+          <div class="video-idle-state" id="local-idle">
+            <span class="idle-icon">⬡</span>
+            <span>Camera off</span>
+          </div>
+        </div>
+        <div class="video-wrapper remote-wrapper">
+          <video id="remote-video" autoplay playsinline></video>
+          <div class="video-label" id="remote-label">REMOTE</div>
+          <div class="video-idle-state" id="remote-idle">
+            <span class="idle-icon">⬡</span>
+            <span>No active call</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Call Controls -->
+      <div id="call-controls" class="call-controls hidden">
+        <button id="toggle-mic" class="ctrl-btn" title="Toggle Mic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <button id="toggle-cam" class="ctrl-btn" title="Toggle Camera">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        </button>
+        <button id="hangup-btn" class="ctrl-btn hangup" title="End Call">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07C9.44 17.29 7.76 15.32 6.69 13"/><path d="M23 1L1 23"/></svg>
+        </button>
+      </div>
+
+      <div id="call-status" class="call-status"></div>
+    </section>
+
+    <!-- Chat Panel -->
+    <section class="panel chat-panel">
+      <div class="panel-header">
+        <h2>CHAT</h2>
+        <div class="pulse-dot"></div>
+      </div>
+      <div id="chat-messages" class="chat-messages">
+        <div class="chat-empty">Send a message to everyone online.</div>
+      </div>
+      <div class="chat-input-row">
+        <input
+          id="chat-input"
+          type="text"
+          class="chat-input"
+          placeholder="Type a message…"
+          maxlength="2000"
+          autocomplete="off"
+        />
+        <button id="chat-send" class="chat-send-btn" title="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ── INCOMING CALL MODAL ──────────────────────────────────────── -->
+<div id="incoming-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-ring">
+      <div class="ring-pulse"></div>
+      <span class="ring-icon">📞</span>
+    </div>
+    <p class="modal-title">Incoming Call</p>
+    <p id="caller-name" class="modal-caller"></p>
+    <div class="modal-actions">
+      <button id="accept-call" class="modal-btn accept">ACCEPT</button>
+      <button id="reject-call" class="modal-btn reject">DECLINE</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
