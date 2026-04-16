@@ -39,6 +39,7 @@ let dmUnreadMap        = new Map(); // userId → count
 
 // ── GROUP CALL STATE ──────────────────────────────────────────────────────────
 let currentRoomId      = null;
+let lastLeftRoomId     = null; // track last group room for rejoin
 let groupPeers         = new Map(); // socketId → { pc, email, remoteDescSet, iceBuffer }
 let pendingGroupInvite = null; // { roomId, from, inviterEmail }
 
@@ -136,6 +137,13 @@ const dmSendBtn        = document.getElementById('dm-send');
 const dmPartnerName    = document.getElementById('dm-partner-name');
 const dmCloseBtn       = document.getElementById('dm-close');
 const dmHeader         = document.getElementById('dm-header');
+// Profile DOM
+const profileBtn       = document.getElementById('profile-btn');
+const profileModal     = document.getElementById('profile-modal');
+const profileUsername   = document.getElementById('profile-username');
+const profileSave      = document.getElementById('profile-save');
+const profileError     = document.getElementById('profile-error');
+const profileClose     = document.getElementById('profile-close');
 
 // ── AUTH TABS ─────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -238,6 +246,41 @@ logoutBtn.addEventListener('click', async () => {
   authScreen.classList.add('active');
 });
 
+// ── PROFILE ───────────────────────────────────────────────────────────────────
+profileBtn.addEventListener('click', () => {
+  profileUsername.value = currentUser.username || '';
+  profileError.textContent = '';
+  profileModal.classList.remove('hidden');
+});
+
+profileClose.addEventListener('click', () => {
+  profileModal.classList.add('hidden');
+});
+
+profileSave.addEventListener('click', async () => {
+  const username = profileUsername.value.trim();
+  profileError.textContent = '';
+
+  try {
+    const res = await fetch('/auth/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+    const data = await res.json();
+    if (!res.ok) { profileError.textContent = data.error; return; }
+
+    currentUser.username = data.username;
+    headerEmail.textContent = data.username || currentUser.email;
+    profileModal.classList.add('hidden');
+
+    // Notify server to update display name for all users
+    if (socket) socket.emit('profile:username-updated', { username: data.username });
+  } catch {
+    profileError.textContent = 'Failed to update profile.';
+  }
+});
+
 // ── SESSION CHECK ─────────────────────────────────────────────────────────────
 (async () => {
   try {
@@ -248,7 +291,7 @@ logoutBtn.addEventListener('click', async () => {
 
 // ── ENTER APP ─────────────────────────────────────────────────────────────────
 async function enterApp() {
-  headerEmail.textContent = currentUser.email;
+  headerEmail.textContent = currentUser.username || currentUser.email;
   authScreen.classList.remove('active');
   appScreen.classList.add('active');
   try {
@@ -412,6 +455,8 @@ function connectSocket() {
 
   socket.on('group:dissolved', ({ roomId }) => {
     console.log('[GROUP] Room dissolved');
+    // Clear rejoin if this was the room we left
+    if (lastLeftRoomId === roomId) lastLeftRoomId = null;
     setStatus('Group call ended.');
     hangupGroupCall();
   });
@@ -505,6 +550,7 @@ function connectSocket() {
     streamPC.ontrack = (e) => {
       // Stream viewer video must NOT be mirrored
       streamVideo.classList.remove('mirror-self');
+      streamVideo.style.transform = '';
       if (e.streams && e.streams[0]) {
         streamVideo.srcObject = e.streams[0];
       } else {
@@ -586,8 +632,9 @@ function renderUsers(users) {
     const isBusy = u.inCall && !isInMyCall;
     card.className = 'user-card';
 
-    const initial = u.email.charAt(0).toUpperCase();
-    const shortEmail = u.email.length > 20 ? u.email.substring(0, 20) + '…' : u.email;
+    const initial = (u.displayName || u.email).charAt(0).toUpperCase();
+    const display = u.displayName || u.email;
+    const shortDisplay = display.length > 20 ? display.substring(0, 20) + '…' : display;
     let statusText, dotClass;
 
     if (u.isStreaming) {
@@ -604,7 +651,12 @@ function renderUsers(users) {
 
     let actionsHtml = '';
     if (isBusy && !u.isStreaming) {
-      actionsHtml = '<div class="action-btn busy-btn" title="Busy">📵</div>';
+      // If user is in the group call we left, show rejoin button
+      if (u.inGroupCall && lastLeftRoomId && u.groupRoomId === lastLeftRoomId && !inCallWithSocketId && !currentRoomId) {
+        actionsHtml = '<div class="action-btn video-call" data-action="rejoin" title="Rejoin Group Call">🔁</div>';
+      } else {
+        actionsHtml = '<div class="action-btn busy-btn" title="Busy">📵</div>';
+      }
     } else {
       actionsHtml =
         '<div class="action-btn dm-btn" data-action="dm" title="Message">💬</div>' +
@@ -620,7 +672,7 @@ function renderUsers(users) {
         (u.isStreaming ? '<span class="live-badge">LIVE</span>' : '') +
       '</div>' +
       '<div class="user-info">' +
-        '<div class="user-email" title="' + escapeHtml(u.email) + '">' + escapeHtml(shortEmail) + '</div>' +
+        '<div class="user-email" title="' + escapeHtml(u.email) + '">' + escapeHtml(shortDisplay) + '</div>' +
         '<div class="user-status"><div class="' + dotClass + '"></div>' +
         '<span class="status-text ' + statusClass + '">' + statusText + '</span></div>' +
       '</div>' +
@@ -631,10 +683,11 @@ function renderUsers(users) {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const action = btn.dataset.action;
-        if (action === 'dm') openDm(u.userId, u.email);
-        else if (action === 'audio') initiateCall(u.socketId, u.email, 'audio');
-        else if (action === 'video') initiateCall(u.socketId, u.email, 'video');
-        else if (action === 'watch') watchStream(u.socketId, u.email);
+        if (action === 'dm') openDm(u.userId, u.displayName || u.email);
+        else if (action === 'audio') initiateCall(u.socketId, u.displayName || u.email, 'audio');
+        else if (action === 'video') initiateCall(u.socketId, u.displayName || u.email, 'video');
+        else if (action === 'watch') watchStream(u.socketId, u.displayName || u.email);
+        else if (action === 'rejoin') rejoinGroupCall();
       });
     });
 
@@ -836,6 +889,7 @@ function createPeerConnection(targetSocketId) {
     remoteIdle.style.display = 'none';
     // Remote video must NEVER be mirrored — only local self-view uses mirror
     remoteVideo.classList.remove('mirror-self');
+    remoteVideo.style.transform = '';
     if (event.streams && event.streams[0]) {
       if (remoteVideo.srcObject !== event.streams[0]) {
         remoteVideo.srcObject = event.streams[0];
@@ -1049,6 +1103,7 @@ function hangupCall() {
   groupLocalVideo.srcObject = null;
   // Clean up mirror classes
   remoteVideo.classList.remove('mirror-self');
+  remoteVideo.style.transform = '';
   localVideo.classList.remove('mirror-self');
   groupLocalVideo.classList.remove('mirror-self');
   localIdle.style.display = '';
@@ -1120,9 +1175,9 @@ function showAddParticipantModal() {
       card.className = 'invite-user-card';
       card.innerHTML =
         '<div class="user-avatar" style="width:30px;height:30px;font-size:12px;">' +
-          u.email.charAt(0).toUpperCase() +
+          (u.displayName || u.email).charAt(0).toUpperCase() +
         '</div>' +
-        '<span class="user-email">' + escapeHtml(u.email) + '</span>' +
+        '<span class="user-email">' + escapeHtml(u.displayName || u.email) + '</span>' +
         '<button class="invite-btn">INVITE</button>';
       card.querySelector('.invite-btn').addEventListener('click', () => {
         if (currentRoomId) {
@@ -1257,6 +1312,8 @@ function hangupGroupCall() {
     if (tile) tile.remove();
   }
   groupPeers.clear();
+  // Save room ID for rejoin before clearing
+  if (currentRoomId) lastLeftRoomId = currentRoomId;
   currentRoomId = null;
   // Also clean up any leftover 1-to-1 state (from call→group conversion)
   if (peerConnection) { peerConnection.close(); peerConnection = null; }
@@ -1267,6 +1324,7 @@ function hangupGroupCall() {
   localVideo.srcObject = null;
   groupLocalVideo.srcObject = null;
   remoteVideo.classList.remove('mirror-self');
+  remoteVideo.style.transform = '';
   localVideo.classList.remove('mirror-self');
   groupLocalVideo.classList.remove('mirror-self');
   callControls.classList.add('hidden');
@@ -1276,6 +1334,15 @@ function hangupGroupCall() {
   toggleMicBtn.classList.remove('muted');
   toggleCamBtn.classList.remove('muted');
   callMode = 'video';
+}
+
+// ── Rejoin Group Call ─────────────────────────────────────────────────────────
+function rejoinGroupCall() {
+  if (!lastLeftRoomId || inCallWithSocketId || currentRoomId) return;
+  callMode = 'video';
+  const roomId = lastLeftRoomId;
+  lastLeftRoomId = null;
+  socket.emit('group:accept', { roomId });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1334,7 +1401,8 @@ function startStreamingSession(mode = 'camera') {
   remoteLabel.textContent = 'YOUR LIVE STREAM';
 
   // Mirror only for camera (selfie-view); screen share must not be flipped
-  remoteVideo.classList.toggle('mirror-self', mode === 'camera');
+  // Use inline style so the .mirror-self class never touches remoteVideo
+  remoteVideo.style.transform = mode === 'camera' ? 'scaleX(-1)' : '';
 
   // Show stream controls; hide cam toggle for screen-only streams
   streamControls.classList.remove('hidden');
@@ -1388,7 +1456,7 @@ streamToggleScreenBtn.addEventListener('click', async () => {
       liveStream = camStream;
       streamMode = 'camera';
       remoteVideo.srcObject = liveStream;
-      remoteVideo.classList.add('mirror-self');
+      remoteVideo.style.transform = 'scaleX(-1)';
       streamToggleScreenBtn.classList.remove('active-share');
       streamToggleCamBtn.classList.remove('hidden');
     } catch { setStatus('Camera access denied.'); }
@@ -1423,7 +1491,7 @@ streamToggleScreenBtn.addEventListener('click', async () => {
       liveStream = screenStr;
       streamMode = 'screen';
       remoteVideo.srcObject = liveStream;
-      remoteVideo.classList.remove('mirror-self');
+      remoteVideo.style.transform = '';
       streamToggleScreenBtn.classList.add('active-share');
       streamToggleCamBtn.classList.add('hidden');
     } catch { setStatus('Screen share denied.'); }
@@ -1452,11 +1520,11 @@ function showStreamInviteModal() {
       const item = document.createElement('div');
       item.className = 'invite-user-item';
       item.innerHTML =
-        '<div class="invite-user-email">' + escapeHtml(u.email) + '</div>' +
+        '<div class="invite-user-email">' + escapeHtml(u.displayName || u.email) + '</div>' +
         '<button class="modal-btn accept" style="padding:6px 14px;font-size:10px">INVITE</button>';
       item.querySelector('button').addEventListener('click', () => {
         socket.emit('stream:invite', { targetSocketId: u.socketId });
-        setStatus('Invite sent to ' + u.email);
+        setStatus('Invite sent to ' + (u.displayName || u.email));
         streamInviteModal.classList.add('hidden');
       });
       streamInviteUsersList.appendChild(item);
@@ -1486,6 +1554,7 @@ function stopStreaming() {
   stopLiveBtn.classList.add('hidden');
   goLiveBtn.classList.remove('hidden');
   streamControls.classList.add('hidden');
+  remoteVideo.style.transform = '';
   remoteVideo.classList.remove('mirror-self');
 
   if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
@@ -1571,7 +1640,7 @@ function appendDmMessage(msg, scroll = true) {
   if (empty) empty.remove();
 
   const isOwn = currentUser && msg.sender_id === currentUser.id;
-  const author = isOwn ? 'You' : (msg.sender_email || 'Unknown');
+  const author = isOwn ? 'You' : (msg.display_name || msg.sender_email || 'Unknown');
 
   const div = document.createElement('div');
   div.className = 'chat-msg' + (isOwn ? ' own' : '');
@@ -1652,13 +1721,14 @@ function appendChatMessage(msg, scroll = true) {
   if (empty) empty.remove();
 
   const isOwn = currentUser && msg.user_id === currentUser.id;
-  const shortEmail = msg.email.length > 18 ? msg.email.slice(0, 18) + '…' : msg.email;
+  const authorName = msg.display_name || msg.email;
+  const shortName = authorName.length > 18 ? authorName.slice(0, 18) + '…' : authorName;
 
   const div = document.createElement('div');
   div.className = 'chat-msg' + (isOwn ? ' own' : '');
   div.innerHTML =
     '<div class="chat-msg-meta">' +
-      '<span class="chat-msg-author" title="' + escapeHtml(msg.email) + '">' + escapeHtml(shortEmail) + '</span>' +
+      '<span class="chat-msg-author" title="' + escapeHtml(msg.email) + '">' + escapeHtml(shortName) + '</span>' +
       '<span class="chat-msg-time">' + formatTime(msg.created_at) + '</span>' +
     '</div>' +
     '<div class="chat-msg-bubble">' + escapeHtml(msg.content) + '</div>';

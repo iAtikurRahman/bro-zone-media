@@ -19,10 +19,12 @@ function requireAuth(req, res, next) {
 router.get('/history', requireAuth, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT id, user_id, email, content,
-              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
-       FROM messages
-       ORDER BY created_at DESC
+      `SELECT m.id, m.user_id, m.email, m.content,
+              to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
+              COALESCE(u.username, m.email) AS display_name
+       FROM messages m
+       LEFT JOIN users u ON m.user_id = u.id
+       ORDER BY m.created_at DESC
        LIMIT 100`,
       []
     );
@@ -40,12 +42,14 @@ router.get('/dm/history/:userId', requireAuth, async (req, res) => {
   if (isNaN(otherId)) return res.status(400).json({ error: 'Invalid userId' });
   try {
     const result = await db.query(
-      `SELECT id, sender_id, sender_email, receiver_id, content,
-              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
-       FROM private_messages
-       WHERE (sender_id = $1 AND receiver_id = $2)
-          OR (sender_id = $2 AND receiver_id = $1)
-       ORDER BY created_at DESC
+      `SELECT pm.id, pm.sender_id, pm.sender_email, pm.receiver_id, pm.content,
+              to_char(pm.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
+              COALESCE(u.username, pm.sender_email) AS display_name
+       FROM private_messages pm
+       LEFT JOIN users u ON pm.sender_id = u.id
+       WHERE (pm.sender_id = $1 AND pm.receiver_id = $2)
+          OR (pm.sender_id = $2 AND pm.receiver_id = $1)
+       ORDER BY pm.created_at DESC
        LIMIT 100`,
       [myId, otherId]
     );

@@ -117,11 +117,19 @@ io.use((socket, next) => {
 });
 
 // ─── Socket Events ──────────────────────────────────────────────────────────
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const { id: userId, email } = socket.user;
   console.log(`✅ CONNECTED  ${email} [${socket.id}]`);
 
-  onlineUsers.set(socket.id, { userId, email });
+  // Fetch username from DB
+  let username = null;
+  try {
+    const uResult = await db.query('SELECT username FROM users WHERE id = $1', [userId]);
+    if (uResult.rows.length > 0) username = uResult.rows[0].username;
+  } catch {}
+  const displayName = username || email;
+
+  onlineUsers.set(socket.id, { userId, email, username, displayName });
   broadcastOnlineUsers();
 
   socket.on('call:offer', ({ targetSocketId, offer, callType }) => {
@@ -134,7 +142,7 @@ io.on('connection', (socket) => {
     }
     io.to(targetSocketId).emit('call:incoming', {
       from: socket.id,
-      callerEmail: caller ? caller.email : email,
+      callerEmail: caller ? (caller.displayName || caller.email) : email,
       offer,
       callType: callType || 'video'
     });
@@ -195,6 +203,8 @@ io.on('connection', (socket) => {
         [userId, email, text]
       );
       const msg = result.rows[0];
+      const userInfo = onlineUsers.get(socket.id);
+      msg.display_name = userInfo ? userInfo.displayName : email;
       io.emit('chat:message', msg);
     } catch (err) {
       console.error('chat:message DB error:', err);
@@ -215,6 +225,8 @@ io.on('connection', (socket) => {
         [userId, email, targetUserId, text]
       );
       const msg = result.rows[0];
+      const senderInfo = onlineUsers.get(socket.id);
+      msg.display_name = senderInfo ? senderInfo.displayName : email;
       socket.emit('dm:message', msg);
       const targetEntry = [...onlineUsers.entries()].find(([, u]) => u.userId === targetUserId);
       if (targetEntry) {
@@ -234,7 +246,7 @@ io.on('connection', (socket) => {
     callPairs.delete(partnerSocketId);
     const participantList = [...room.participants].map(pid => ({
       socketId: pid,
-      email: onlineUsers.get(pid)?.email || 'Unknown'
+      email: onlineUsers.get(pid)?.displayName || onlineUsers.get(pid)?.email || 'Unknown'
     }));
     io.to(socket.id).emit('group:created', { roomId, participants: participantList });
     io.to(partnerSocketId).emit('group:created', { roomId, participants: participantList });
@@ -252,7 +264,7 @@ io.on('connection', (socket) => {
     io.to(targetSocketId).emit('group:incoming', {
       roomId,
       from: socket.id,
-      inviterEmail: inviter ? inviter.email : 'Unknown',
+      inviterEmail: inviter ? (inviter.displayName || inviter.email) : 'Unknown',
       participantCount: room.participants.size
     });
   });
@@ -266,12 +278,12 @@ io.on('connection', (socket) => {
       io.to(pid).emit('group:participant-joined', {
         roomId,
         socketId: socket.id,
-        email: onlineUsers.get(socket.id)?.email || 'Unknown'
+        email: onlineUsers.get(socket.id)?.displayName || onlineUsers.get(socket.id)?.email || 'Unknown'
       });
     });
     const participantInfo = existingParticipants.map(pid => ({
       socketId: pid,
-      email: onlineUsers.get(pid)?.email || 'Unknown'
+      email: onlineUsers.get(pid)?.displayName || onlineUsers.get(pid)?.email || 'Unknown'
     }));
     socket.emit('group:joined', { roomId, participants: participantInfo });
     broadcastOnlineUsers();
@@ -283,7 +295,7 @@ io.on('connection', (socket) => {
     room.participants.forEach(pid => {
       io.to(pid).emit('group:invite-rejected', {
         socketId: socket.id,
-        email: onlineUsers.get(socket.id)?.email || 'Unknown'
+        email: onlineUsers.get(socket.id)?.displayName || onlineUsers.get(socket.id)?.email || 'Unknown'
       });
     });
   });
@@ -314,6 +326,16 @@ io.on('connection', (socket) => {
       });
     }
     broadcastOnlineUsers();
+  });
+
+  // ─── Profile ─────────────────────────────────────────────────────────────
+  socket.on('profile:username-updated', ({ username }) => {
+    const user = onlineUsers.get(socket.id);
+    if (user) {
+      user.username = username;
+      user.displayName = username || user.email;
+      broadcastOnlineUsers();
+    }
   });
 
   // ─── Screen Sharing ────────────────────────────────────────────────────────
@@ -354,7 +376,7 @@ io.on('connection', (socket) => {
     stream.viewers.add(socket.id);
     io.to(streamerSocketId).emit('stream:viewer-joined', {
       viewerSocketId: socket.id,
-      viewerEmail: onlineUsers.get(socket.id)?.email || 'Unknown'
+      viewerEmail: onlineUsers.get(socket.id)?.displayName || onlineUsers.get(socket.id)?.email || 'Unknown'
     });
   });
 
@@ -375,7 +397,7 @@ io.on('connection', (socket) => {
     const inviter = onlineUsers.get(socket.id);
     io.to(targetSocketId).emit('stream:invited', {
       streamerSocketId: socket.id,
-      streamerEmail: inviter ? inviter.email : 'Unknown'
+      streamerEmail: inviter ? (inviter.displayName || inviter.email) : 'Unknown'
     });
   });
 
@@ -437,6 +459,8 @@ function broadcastOnlineUsers() {
     socketId,
     email:  u.email,
     userId: u.userId,
+    username: u.username || null,
+    displayName: u.displayName || u.email,
     inCall: callPairs.has(socketId) || isInGroupCall(socketId),
     inGroupCall: isInGroupCall(socketId),
     groupRoomId: getRoomForSocket(socketId),

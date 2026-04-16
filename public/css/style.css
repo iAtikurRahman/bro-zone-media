@@ -204,6 +204,7 @@ html, body {
   font-size: 10px; letter-spacing: 1px; cursor: pointer; transition: all 0.2s;
 }
 .btn-ghost:hover { border-color: var(--red); color: var(--red); }
+#profile-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .btn-ghost-sm {
   padding: 4px 8px; background: transparent;
@@ -445,7 +446,13 @@ html, body {
 }
 
 /* mirror applied dynamically: .mirror-self is added by JS when showing camera, removed for screen share */
-.mirror-self { transform: scaleX(-1) !important; }
+/* Only local self-view elements should ever be mirrored */
+#local-video.mirror-self,
+#group-local-video.mirror-self { transform: scaleX(-1) !important; }
+
+/* Remote participant videos must never be mirrored */
+.group-video-tile > video { transform: none; }
+#stream-video { transform: none; }
 
 /* ── Stream Viewer ────────────────────────────────────────────── */
 .stream-viewer {

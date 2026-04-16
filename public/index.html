@@ -71,6 +71,7 @@
       <span class="user-dot"></span>
       <span id="header-email"></span>
     </div>
+    <button id="profile-btn" class="btn-ghost">PROFILE</button>
     <button id="logout-btn" class="btn-ghost">SIGN OUT</button>
   </header>
 
@@ -309,6 +310,23 @@
 <button id="stop-live-btn" class="stop-live-fab hidden" title="Stop Stream">
   <span>⏹ STOP LIVE</span>
 </button>
+
+<!-- ── PROFILE MODAL ─────────────────────────────────────────────── -->
+<div id="profile-modal" class="modal hidden">
+  <div class="modal-card">
+    <p class="modal-title">SET USERNAME</p>
+    <p class="modal-sub">Choose a unique username (3-30 chars, letters, numbers, underscores)</p>
+    <div class="field" style="margin:16px 0 8px; text-align:left;">
+      <label>USERNAME</label>
+      <input type="text" id="profile-username" placeholder="cool_username" maxlength="30" autocomplete="off" />
+    </div>
+    <div id="profile-error" class="form-error" style="min-height:18px; margin-bottom:8px;"></div>
+    <div class="modal-actions">
+      <button id="profile-save" class="modal-btn accept">SAVE</button>
+      <button id="profile-close" class="modal-btn reject">CANCEL</button>
+    </div>
+  </div>
+</div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/js/app.js"></script>

@@ -42,6 +42,13 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_pm_participants
     ON private_messages (sender_id, receiver_id)
   `);
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(50)
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+    ON users (username) WHERE username IS NOT NULL
+  `);
   console.log('PostgreSQL tables ready.');
 }
 
