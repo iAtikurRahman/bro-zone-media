@@ -145,6 +145,43 @@ const profileSave      = document.getElementById('profile-save');
 const profileError     = document.getElementById('profile-error');
 const profileClose     = document.getElementById('profile-close');
 
+// ── VIDEO PLAYBACK HELPERS ────────────────────────────────────────────────────
+function ensureVideoPlayback(videoEl) {
+  if (!videoEl || !videoEl.srcObject) return;
+  videoEl.muted = false;
+  const p = videoEl.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(() => {
+      // Autoplay with audio blocked — play muted, then prompt user
+      videoEl.muted = true;
+      videoEl.play().then(() => {
+        showUnmuteOverlay(videoEl);
+      }).catch(() => {});
+    });
+  }
+}
+
+function showUnmuteOverlay(videoEl) {
+  const parent = videoEl.closest('.video-layout-1to1, .group-video-tile, .stream-viewer');
+  if (!parent || parent.querySelector('.unmute-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'unmute-overlay';
+  overlay.textContent = '\uD83D\uDD07 Tap to enable audio';
+  overlay.addEventListener('click', () => {
+    videoEl.muted = false;
+    videoEl.play().catch(() => {});
+    overlay.remove();
+  }, { once: true });
+  parent.appendChild(overlay);
+}
+
+function removeUnmuteOverlay(videoEl) {
+  const parent = videoEl.closest('.video-layout-1to1, .group-video-tile, .stream-viewer');
+  if (!parent) return;
+  const overlay = parent.querySelector('.unmute-overlay');
+  if (overlay) overlay.remove();
+}
+
 // ── AUTH TABS ─────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -292,6 +329,12 @@ profileSave.addEventListener('click', async () => {
 // ── ENTER APP ─────────────────────────────────────────────────────────────────
 async function enterApp() {
   headerEmail.textContent = currentUser.username || currentUser.email;
+  // Set local avatar letter for group call tile
+  const avatarLetter = document.getElementById('group-local-avatar-letter');
+  if (avatarLetter) {
+    const name = currentUser.username || currentUser.email || '?';
+    avatarLetter.textContent = name.charAt(0).toUpperCase();
+  }
   authScreen.classList.remove('active');
   appScreen.classList.add('active');
   try {
@@ -728,6 +771,7 @@ async function initiateCall(targetSocketId, targetEmail, type = 'video') {
     }
     callControls.classList.remove('hidden');
     setStatus('Calling ' + targetEmail + '…');
+    if (window._switchToVideoPanel) window._switchToVideoPanel();
     startCallTimeout();
   } catch (err) {
     console.error('createOffer:', err);
@@ -794,6 +838,7 @@ acceptCallBtn.addEventListener('click', async () => {
     }
     callControls.classList.remove('hidden');
     setStatus('Connecting…');
+    if (window._switchToVideoPanel) window._switchToVideoPanel();
     startCallTimeout();
   } catch (err) {
     console.error('Accept error:', err);
@@ -875,6 +920,11 @@ function createPeerConnection(targetSocketId) {
       setStatus('✅ Call connected');
       iceRestartAttempts = 0; isRestartingIce = false;
       isCallEstablished = true; clearCallTimeout();
+      // Retry unmuted playback now that connection is fully established
+      if (remoteVideo.srcObject) {
+        remoteVideo.muted = false;
+        remoteVideo.play().then(() => removeUnmuteOverlay(remoteVideo)).catch(() => {});
+      }
     } else if (s === 'failed') {
       doIceRestart(pc, targetSocketId);
     } else if (s === 'closed') {
@@ -884,10 +934,7 @@ function createPeerConnection(targetSocketId) {
 
   pc.ontrack = (event) => {
     console.log('[TRACK] Remote:', event.track.kind);
-    // Always attach the remote stream so audio plays even in audio-only calls.
-    // The remoteVideo element is hidden via CSS for audio calls but still outputs audio.
     remoteIdle.style.display = 'none';
-    // Remote video must NEVER be mirrored — only local self-view uses mirror
     remoteVideo.classList.remove('mirror-self');
     remoteVideo.style.transform = '';
     if (event.streams && event.streams[0]) {
@@ -898,13 +945,7 @@ function createPeerConnection(targetSocketId) {
       if (!remoteVideo.srcObject) remoteVideo.srcObject = new MediaStream();
       remoteVideo.srcObject.addTrack(event.track);
     }
-    remoteVideo.muted = false;
-    if (remoteVideo.paused) {
-      remoteVideo.play().catch(() => {
-        remoteVideo.muted = true;
-        remoteVideo.play().catch(() => {});
-      });
-    }
+    ensureVideoPlayback(remoteVideo);
   };
 
   return pc;
@@ -997,6 +1038,10 @@ toggleCamBtn.addEventListener('click', () => {
   camEnabled = !camEnabled;
   if (localStream) localStream.getVideoTracks().forEach(t => { t.enabled = camEnabled; });
   toggleCamBtn.classList.toggle('muted', !camEnabled);
+  // Update local group tile avatar visibility
+  const localAvatar = document.getElementById('group-local-avatar');
+  if (localAvatar) localAvatar.style.display = camEnabled ? 'none' : '';
+  if (groupLocalVideo) groupLocalVideo.style.display = camEnabled ? '' : 'none';
 });
 
 hangupBtn.addEventListener('click', () => {
@@ -1219,38 +1264,69 @@ rejectGroupBtn.addEventListener('click', () => {
 function createGroupPeerObj(socketId, email) {
   const pc = new RTCPeerConnection({ iceServers });
 
+  // Create tile immediately so participant is always visible
+  let tile = document.getElementById('group-tile-' + socketId);
+  if (!tile) {
+    tile = document.createElement('div');
+    tile.className = 'group-video-tile';
+    tile.id = 'group-tile-' + socketId;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'group-tile-avatar';
+    avatar.innerHTML =
+      '<div class="avatar-circle">' + escapeHtml(email ? email.charAt(0).toUpperCase() : '?') + '</div>' +
+      '<div class="avatar-name">' + escapeHtml(email) + '</div>';
+    tile.appendChild(avatar);
+
+    const vid = document.createElement('video');
+    vid.autoplay = true;
+    vid.playsInline = true;
+    vid.classList.remove('mirror-self');
+    vid.style.display = 'none';
+    tile.appendChild(vid);
+
+    const label = document.createElement('div');
+    label.className = 'video-label';
+    label.textContent = email;
+    tile.appendChild(label);
+
+    videoGroup.appendChild(tile);
+    updateGroupLayout();
+  }
+
   pc.onicecandidate = ({ candidate }) => {
     socket.emit('group:ice', { roomId: currentRoomId, targetSocketId: socketId, candidate: candidate || null });
   };
 
   pc.ontrack = (event) => {
     console.log('[GROUP-TRACK]', email, event.track.kind);
-    let tile = document.getElementById('group-tile-' + socketId);
-    if (!tile) {
-      tile = document.createElement('div');
-      tile.className = 'group-video-tile';
-      tile.id = 'group-tile-' + socketId;
-      const vid = document.createElement('video');
-      vid.autoplay = true;
-      vid.playsInline = true;
-      // Remote videos must NOT be mirrored — ensure no mirror class
-      vid.classList.remove('mirror-self');
-      tile.appendChild(vid);
-      const label = document.createElement('div');
-      label.className = 'video-label';
-      label.textContent = email;
-      tile.appendChild(label);
-      videoGroup.appendChild(tile);
-    }
-    const vid = tile.querySelector('video');
+    const t = document.getElementById('group-tile-' + socketId);
+    if (!t) return;
+    const vid = t.querySelector('video');
+    const avatar = t.querySelector('.group-tile-avatar');
+
     if (event.streams && event.streams[0]) {
       vid.srcObject = event.streams[0];
     } else {
       if (!vid.srcObject) vid.srcObject = new MediaStream();
       vid.srcObject.addTrack(event.track);
     }
-    vid.play().catch(() => {});
-    updateGroupLayout();
+
+    if (event.track.kind === 'video') {
+      vid.style.display = '';
+      if (avatar) avatar.style.display = 'none';
+
+      event.track.onmute = () => {
+        vid.style.display = 'none';
+        if (avatar) avatar.style.display = '';
+      };
+      event.track.onunmute = () => {
+        vid.style.display = '';
+        if (avatar) avatar.style.display = 'none';
+      };
+    }
+
+    ensureVideoPlayback(vid);
   };
 
   pc.onconnectionstatechange = () => {
@@ -1297,11 +1373,13 @@ function switchToGroupLayout() {
   videoGroup.classList.remove('hidden');
   callControls.classList.remove('hidden');
   updateGroupLayout();
+  if (window._switchToVideoPanel) window._switchToVideoPanel();
 }
 
 function updateGroupLayout() {
   const totalTiles = groupPeers.size + 1; // +1 for local
-  videoGroup.className = 'video-layout-group p-' + Math.min(totalTiles, 9);
+  for (let i = 1; i <= 9; i++) videoGroup.classList.remove('p-' + i);
+  videoGroup.classList.add('p-' + Math.min(totalTiles, 9));
 }
 
 function hangupGroupCall() {
@@ -1581,6 +1659,7 @@ function watchStream(streamerSocketId, email) {
 
   socket.emit('stream:watch', { streamerSocketId });
   setStatus('Connecting to stream…');
+  if (window._switchToVideoPanel) window._switchToVideoPanel();
 }
 
 leaveStreamBtn.addEventListener('click', leaveStream);
@@ -1844,6 +1923,34 @@ function stopRingtone() {
   else if (ringtoneHandle) { clearTimeout(ringtoneHandle); }
   ringtoneHandle = null;
 }
+
+// ── MOBILE NAVIGATION ─────────────────────────────────────────────────────────
+(function initMobileNav() {
+  const nav = document.getElementById('mobile-nav');
+  if (!nav) return;
+  const panels = {
+    users: document.querySelector('.users-panel'),
+    video: document.querySelector('.video-panel'),
+    chat: document.querySelector('.chat-panel')
+  };
+
+  function setPanel(name) {
+    Object.entries(panels).forEach(([key, el]) => {
+      el.classList.toggle('mobile-active', key === name);
+    });
+    nav.querySelectorAll('.mobile-nav-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.panel === name);
+    });
+  }
+
+  nav.querySelectorAll('.mobile-nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => setPanel(btn.dataset.panel));
+  });
+
+  window._switchToVideoPanel = () => {
+    if (window.innerWidth <= 768) setPanel('video');
+  };
+})();
 
 // ── PiP DRAGGING ──────────────────────────────────────────────────────────────
 (function initPipDrag() {
