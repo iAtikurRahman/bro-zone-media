@@ -909,9 +909,6 @@ html, body {
     display: flex;
   }
 
-  /* Default: video panel active on mobile */
-  .video-panel { display: flex; }
-
   .mobile-nav { display: block; }
 
   .users-list { gap: 4px; padding: 8px; }

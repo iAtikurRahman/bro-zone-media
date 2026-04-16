@@ -1947,6 +1947,9 @@ function stopRingtone() {
     btn.addEventListener('click', () => setPanel(btn.dataset.panel));
   });
 
+  // Set initial active panel so the class-based display system is in sync
+  setPanel('video');
+
   window._switchToVideoPanel = () => {
     if (window.innerWidth <= 768) setPanel('video');
   };
