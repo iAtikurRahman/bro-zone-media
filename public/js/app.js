@@ -1693,6 +1693,9 @@ function openDm(userId, email) {
   publicChat.classList.remove('active');
   dmChat.classList.add('active');
 
+  // On mobile, switch to the chat panel so the DM is visible
+  if (window._switchToPanel) window._switchToPanel('chat');
+
   loadDmHistory(userId);
 }
 
@@ -1952,6 +1955,10 @@ function stopRingtone() {
 
   window._switchToVideoPanel = () => {
     if (window.innerWidth <= 768) setPanel('video');
+  };
+
+  window._switchToPanel = (name) => {
+    if (window.innerWidth <= 768) setPanel(name);
   };
 })();
 
