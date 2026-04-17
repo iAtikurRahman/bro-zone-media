@@ -666,28 +666,63 @@ async function flushIceCandidates() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  RENDER ONLINE USERS
 // ══════════════════════════════════════════════════════════════════════════════
+function timeAgo(dateStr) {
+  if (!dateStr) return 'a while ago';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return days + 'd ago';
+  const weeks = Math.floor(days / 7);
+  if (weeks < 4) return weeks + 'w ago';
+  const months = Math.floor(days / 30);
+  return months + 'mo ago';
+}
+
 function renderUsers(users) {
   onlineUsersList = users;
   const others = users.filter(u => u.userId !== currentUser.id);
-  userCount.textContent = others.length;
+  const onlineOthers = others.filter(u => u.online !== false);
+  const offlineOthers = others.filter(u => u.online === false);
+  userCount.textContent = onlineOthers.length;
 
   if (others.length === 0) {
-    usersList.innerHTML = '<div class="empty-state">No other users online.</div>';
+    usersList.innerHTML = '<div class="empty-state">No other users yet.</div>';
     return;
   }
   usersList.innerHTML = '';
-  others.forEach(u => {
+
+  // Render online users first
+  onlineOthers.forEach(u => renderUserCard(u, true));
+
+  // Offline separator
+  if (offlineOthers.length > 0) {
+    const sep = document.createElement('div');
+    sep.className = 'offline-separator';
+    sep.innerHTML = '<span>OFFLINE — ' + offlineOthers.length + '</span>';
+    usersList.appendChild(sep);
+    offlineOthers.forEach(u => renderUserCard(u, false));
+  }
+}
+
+function renderUserCard(u, isOnline) {
     const card = document.createElement('div');
     const isInMyCall = inCallWithSocketId === u.socketId;
     const isBusy = u.inCall && !isInMyCall;
-    card.className = 'user-card';
+    card.className = 'user-card' + (isOnline ? '' : ' user-card-offline');
 
     const initial = (u.displayName || u.email).charAt(0).toUpperCase();
     const display = u.displayName || u.email;
     const shortDisplay = display.length > 20 ? display.substring(0, 20) + '…' : display;
     let statusText, dotClass;
 
-    if (u.isStreaming) {
+    if (!isOnline) {
+      statusText = timeAgo(u.lastSeen); dotClass = 'status-dot offline';
+    } else if (u.isStreaming) {
       statusText = 'LIVE'; dotClass = 'status-dot live';
     } else if (isInMyCall) {
       statusText = 'IN CALL'; dotClass = 'status-dot';
@@ -697,10 +732,12 @@ function renderUsers(users) {
       statusText = 'ONLINE'; dotClass = 'status-dot';
     }
 
-    const statusClass = u.isStreaming ? 'live' : (isBusy ? 'busy' : '');
+    const statusClass = !isOnline ? 'offline' : (u.isStreaming ? 'live' : (isBusy ? 'busy' : ''));
 
     let actionsHtml = '';
-    if (isBusy && !u.isStreaming) {
+    if (!isOnline) {
+      actionsHtml = '<div class="action-btn dm-btn" data-action="dm" title="Message">💬</div>';
+    } else if (isBusy && !u.isStreaming) {
       // If user is in the group call we left, show rejoin button
       if (u.inGroupCall && lastLeftRoomId && u.groupRoomId === lastLeftRoomId && !inCallWithSocketId && !currentRoomId) {
         actionsHtml = '<div class="action-btn video-call" data-action="rejoin" title="Rejoin Group Call">🔁</div>';
@@ -718,7 +755,7 @@ function renderUsers(users) {
     }
 
     card.innerHTML =
-      '<div class="user-avatar">' + initial +
+      '<div class="user-avatar' + (isOnline ? '' : ' avatar-offline') + '">' + initial +
         (u.isStreaming ? '<span class="live-badge">LIVE</span>' : '') +
       '</div>' +
       '<div class="user-info">' +
@@ -742,7 +779,6 @@ function renderUsers(users) {
     });
 
     usersList.appendChild(card);
-  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1810,15 +1846,48 @@ function appendDmMessage(msg, scroll = true) {
 
   const isOwn = currentUser && msg.sender_id === currentUser.id;
   const author = isOwn ? 'You' : (msg.display_name || msg.sender_email || 'Unknown');
+  const content = msg.content || '';
+
+  // Check for group call rejoin link
+  const linkMatch = content.match(/^\[group-call-link:([^\]]+)\]\s*(.*)$/);
 
   const div = document.createElement('div');
   div.className = 'chat-msg' + (isOwn ? ' own' : '');
-  div.innerHTML =
-    '<div class="chat-msg-meta">' +
-      '<span class="chat-msg-author">' + escapeHtml(author) + '</span>' +
-      '<span class="chat-msg-time">' + formatTime(msg.created_at) + '</span>' +
-    '</div>' +
-    '<div class="chat-msg-bubble">' + escapeHtml(msg.content) + '</div>';
+
+  if (linkMatch) {
+    const roomId = linkMatch[1];
+    const text = linkMatch[2] || 'Group call link';
+    div.innerHTML =
+      '<div class="chat-msg-meta">' +
+        '<span class="chat-msg-author">' + escapeHtml(author) + '</span>' +
+        '<span class="chat-msg-time">' + formatTime(msg.created_at) + '</span>' +
+      '</div>' +
+      '<div class="chat-msg-bubble group-call-link-bubble">' +
+        '<span class="group-call-link-icon">📞</span> ' + escapeHtml(text) +
+        '<button class="rejoin-call-btn" data-room-id="' + escapeHtml(roomId) + '">Rejoin Call</button>' +
+      '</div>';
+    const btn = div.querySelector('.rejoin-call-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const rid = btn.dataset.roomId;
+        if (inCallWithSocketId || currentRoomId) {
+          setStatus('End your current call before rejoining.');
+          return;
+        }
+        lastLeftRoomId = rid;
+        rejoinGroupCall();
+        if (window._switchToVideoPanel) window._switchToVideoPanel();
+      });
+    }
+  } else {
+    div.innerHTML =
+      '<div class="chat-msg-meta">' +
+        '<span class="chat-msg-author">' + escapeHtml(author) + '</span>' +
+        '<span class="chat-msg-time">' + formatTime(msg.created_at) + '</span>' +
+      '</div>' +
+      '<div class="chat-msg-bubble">' + escapeHtml(content) + '</div>';
+  }
+
   dmMessages.appendChild(div);
   if (scroll) dmMessages.scrollTop = dmMessages.scrollHeight;
 }

@@ -61,7 +61,7 @@ app.get('/config/ice', (req, res) => {
 const onlineUsers = new Map();
 // ─── Active Call Pairs: socketId → partnerSocketId ────────────────────────────
 const callPairs   = new Map();
-// ─── Group Call Rooms: roomId → { participants: Set<socketId>, host: socketId }
+// ─── Group Call Rooms: roomId → { participants: Set<socketId>, host: socketId, hostUserId }
 const callRooms   = new Map();
 // ─── Active Live Streams: socketId → { viewers: Set<socketId> }
 const activeStreams = new Map();
@@ -240,7 +240,7 @@ io.on('connection', async (socket) => {
   // ─── Group Calls ───────────────────────────────────────────────────────────
   socket.on('group:create', ({ partnerSocketId }) => {
     const roomId = generateRoomId();
-    const room = { participants: new Set([socket.id, partnerSocketId]), host: socket.id };
+    const room = { participants: new Set([socket.id, partnerSocketId]), host: socket.id, hostUserId: userId };
     callRooms.set(roomId, room);
     callPairs.delete(socket.id);
     callPairs.delete(partnerSocketId);
@@ -250,6 +250,8 @@ io.on('connection', async (socket) => {
     }));
     io.to(socket.id).emit('group:created', { roomId, participants: participantList });
     io.to(partnerSocketId).emit('group:created', { roomId, participants: participantList });
+    // Send rejoin link as a system DM to all participants
+    sendGroupCallLink(roomId, userId, email, [socket.id, partnerSocketId]);
     broadcastOnlineUsers();
   });
 
@@ -286,6 +288,11 @@ io.on('connection', async (socket) => {
       email: onlineUsers.get(pid)?.displayName || onlineUsers.get(pid)?.email || 'Unknown'
     }));
     socket.emit('group:joined', { roomId, participants: participantInfo });
+    // Send rejoin link to the joining user
+    const hostUser = onlineUsers.get(room.host);
+    const hostUserId = room.hostUserId || (hostUser ? hostUser.userId : userId);
+    const hostEmail = hostUser ? hostUser.email : email;
+    sendGroupCallLink(roomId, hostUserId, hostEmail, [socket.id]);
     broadcastOnlineUsers();
   });
 
@@ -316,6 +323,8 @@ io.on('connection', async (socket) => {
     const room = callRooms.get(roomId);
     if (!room) return;
     room.participants.delete(socket.id);
+    // Send the leaving user a rejoin DM
+    sendRejoinLink(roomId, userId, email, socket.id);
     if (room.participants.size <= 1) {
       const lastPerson = [...room.participants][0];
       if (lastPerson) io.to(lastPerson).emit('group:dissolved', { roomId });
@@ -410,8 +419,10 @@ io.on('connection', async (socket) => {
   });
 
   // ─── Disconnect ────────────────────────────────────────────────────────────
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`❌ DISCONNECTED  ${email} [${socket.id}]`);
+    // Update last_seen in DB
+    try { await db.query('UPDATE users SET last_seen = NOW() WHERE id = $1', [userId]); } catch {}
     // Notify the call partner if this user was in an active call
     if (callPairs.has(socket.id)) {
       const partner = callPairs.get(socket.id);
@@ -454,8 +465,8 @@ io.on('connection', async (socket) => {
   });
 });
 
-function broadcastOnlineUsers() {
-  const users = Array.from(onlineUsers.entries()).map(([socketId, u]) => ({
+async function broadcastOnlineUsers() {
+  const onlineList = Array.from(onlineUsers.entries()).map(([socketId, u]) => ({
     socketId,
     email:  u.email,
     userId: u.userId,
@@ -464,9 +475,88 @@ function broadcastOnlineUsers() {
     inCall: callPairs.has(socketId) || isInGroupCall(socketId),
     inGroupCall: isInGroupCall(socketId),
     groupRoomId: getRoomForSocket(socketId),
-    isStreaming: activeStreams.has(socketId)
+    isStreaming: activeStreams.has(socketId),
+    online: true
   }));
-  io.emit('users:online', users);
+
+  // Fetch offline users from DB
+  const onlineUserIds = new Set(Array.from(onlineUsers.values()).map(u => u.userId));
+  let offlineList = [];
+  try {
+    const result = await db.query(
+      `SELECT id, email, username, last_seen
+       FROM users
+       WHERE is_active = true AND last_seen IS NOT NULL
+       ORDER BY last_seen DESC
+       LIMIT 100`
+    );
+    offlineList = result.rows
+      .filter(r => !onlineUserIds.has(r.id))
+      .map(r => ({
+        socketId: null,
+        email: r.email,
+        userId: r.id,
+        username: r.username || null,
+        displayName: r.username || r.email,
+        inCall: false,
+        inGroupCall: false,
+        groupRoomId: null,
+        isStreaming: false,
+        online: false,
+        lastSeen: r.last_seen ? r.last_seen.toISOString() : null
+      }));
+  } catch (err) {
+    console.error('broadcastOnlineUsers offline query error:', err);
+  }
+
+  io.emit('users:online', [...onlineList, ...offlineList]);
+}
+
+// ─── Group Call DM Helpers ────────────────────────────────────────────────────
+async function sendGroupCallLink(roomId, hostUserId, hostEmail, participantSocketIds) {
+  const content = `[group-call-link:${roomId}] Group call started. Tap to rejoin anytime.`;
+  for (const sid of participantSocketIds) {
+    const user = onlineUsers.get(sid);
+    if (!user) continue;
+    try {
+      const result = await db.query(
+        `INSERT INTO private_messages (sender_id, sender_email, receiver_id, content)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, sender_id, sender_email, receiver_id, content,
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at`,
+        [hostUserId, hostEmail, user.userId, content]
+      );
+      const msg = result.rows[0];
+      msg.display_name = hostEmail;
+      io.to(sid).emit('dm:message', msg);
+    } catch (err) {
+      console.error('sendGroupCallLink error:', err);
+    }
+  }
+}
+
+async function sendRejoinLink(roomId, leavingUserId, leavingEmail, leavingSocketId) {
+  // Find the host of this room to use as the "sender"
+  const room = callRooms.get(roomId);
+  if (!room) return;
+  const hostUser = onlineUsers.get(room.host);
+  const hostUserId = room.hostUserId || (hostUser ? hostUser.userId : leavingUserId);
+  const hostEmail = hostUser ? hostUser.email : 'System';
+  const content = `[group-call-link:${roomId}] You left the group call. Tap to rejoin.`;
+  try {
+    const result = await db.query(
+      `INSERT INTO private_messages (sender_id, sender_email, receiver_id, content)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, sender_id, sender_email, receiver_id, content,
+         to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at`,
+      [hostUserId, hostEmail, leavingUserId, content]
+    );
+    const msg = result.rows[0];
+    msg.display_name = hostEmail;
+    io.to(leavingSocketId).emit('dm:message', msg);
+  } catch (err) {
+    console.error('sendRejoinLink error:', err);
+  }
 }
 
 // ─── Start Server ─────────────────────────────────────────────────────────────

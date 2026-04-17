@@ -49,6 +49,9 @@ async function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
     ON users (username) WHERE username IS NOT NULL
   `);
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP
+  `);
   console.log('PostgreSQL tables ready.');
 }
 
