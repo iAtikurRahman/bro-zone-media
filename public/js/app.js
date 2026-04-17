@@ -45,6 +45,11 @@ let pendingGroupInvite = null; // { roomId, from, inviterEmail }
 
 // ── LIVE STREAMING STATE ──────────────────────────────────────────────────────
 let pendingOpenParticipantModal = false; // deferred until group:created arrives
+
+// ── DEVICE CAPABILITIES ───────────────────────────────────────────────────────
+const supportsScreenShare = !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+let currentFacingMode = 'user'; // 'user' = front camera, 'environment' = rear camera
 let isStreaming         = false;
 let liveStream          = null; // MediaStream for broadcast
 let streamViewerPCs     = new Map(); // viewerSocketId → RTCPeerConnection
@@ -123,6 +128,8 @@ const streamInvitedModal= document.getElementById('stream-invited-modal');
 const streamInviterName= document.getElementById('stream-inviter-name');
 const acceptStreamInviteBtn = document.getElementById('accept-stream-invite');
 const rejectStreamInviteBtn = document.getElementById('reject-stream-invite');
+const flipCameraBtn     = document.getElementById('flip-camera-btn');
+const streamFlipCamBtn  = document.getElementById('stream-flip-cam-btn');
 // Chat DOM
 const publicTabBtn     = document.getElementById('public-tab-btn');
 const dmTabBtn         = document.getElementById('dm-tab-btn');
@@ -1065,12 +1072,18 @@ toggleScreenBtn.addEventListener('click', async () => {
 });
 
 async function startScreenShare() {
+  if (!supportsScreenShare) {
+    setStatus('Screen sharing is not supported on this browser/device.');
+    return;
+  }
   try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { cursor: 'always' },
-      audio: false
-    });
-  } catch { return; }
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch(e) {
+    if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+      setStatus('Screen share failed. Please try again.');
+    }
+    return;
+  }
 
   const screenTrack = screenStream.getVideoTracks()[0];
   isSharingScreen = true;
@@ -1130,11 +1143,50 @@ function stopScreenShare() {
     socket.emit('screen:sharing-group', { roomId: currentRoomId, sharing: false });
   }
 
-  // Restore camera mirror now that screen share is stopped
-  localVideo.classList.add('mirror-self');
-  groupLocalVideo.classList.add('mirror-self');
+  // Restore camera mirror only when using front camera
+  const shouldMirror = currentFacingMode === 'user' && camEnabled;
+  localVideo.classList.toggle('mirror-self', shouldMirror);
+  groupLocalVideo.classList.toggle('mirror-self', shouldMirror);
   localVideo.srcObject = localStream;
   groupLocalVideo.srcObject = localStream;
+}
+
+// ── FLIP CAMERA (mobile front/rear toggle during a call) ──────────────────────
+if (flipCameraBtn) {
+  flipCameraBtn.addEventListener('click', flipCamera);
+}
+
+async function flipCamera() {
+  if (!localStream || isSharingScreen) return;
+  const newFacing = currentFacingMode === 'user' ? 'environment' : 'user';
+  let newCamStream;
+  try {
+    newCamStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: newFacing },
+      audio: false
+    });
+  } catch(e) {
+    setStatus('Could not switch camera.');
+    return;
+  }
+  currentFacingMode = newFacing;
+  const newVideoTrack = newCamStream.getVideoTracks()[0];
+  if (peerConnection) {
+    const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) await sender.replaceTrack(newVideoTrack);
+  }
+  for (const [, peer] of groupPeers) {
+    const sender = peer.pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) await sender.replaceTrack(newVideoTrack);
+  }
+  localStream.getVideoTracks().forEach(t => t.stop());
+  const audioTracks = localStream.getAudioTracks();
+  localStream = new MediaStream([newVideoTrack, ...audioTracks]);
+  localVideo.srcObject = localStream;
+  groupLocalVideo.srcObject = localStream;
+  const mirrorAfterFlip = newFacing === 'user' && camEnabled;
+  localVideo.classList.toggle('mirror-self', mirrorAfterFlip);
+  groupLocalVideo.classList.toggle('mirror-self', mirrorAfterFlip);
 }
 
 // ── HANGUP ────────────────────────────────────────────────────────────────────
@@ -1450,15 +1502,18 @@ liveCameraBtn.addEventListener('click', async () => {
 });
 
 liveScreenBtn.addEventListener('click', async () => {
+  if (!supportsScreenShare) {
+    setStatus('Screen sharing is not supported on this browser/device.');
+    return;
+  }
   goLiveModal.classList.add('hidden');
   try {
-    liveStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { cursor: 'always' },
-      audio: true
-    });
+    liveStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     liveStream.getVideoTracks()[0].onended = () => stopStreaming();
     startStreamingSession('screen');
-  } catch { setStatus('Screen share denied.'); }
+  } catch(e) {
+    if (e.name !== 'AbortError') setStatus('Screen share denied.');
+  }
 });
 
 function startStreamingSession(mode = 'camera') {
@@ -1540,11 +1595,12 @@ streamToggleScreenBtn.addEventListener('click', async () => {
     } catch { setStatus('Camera access denied.'); }
   } else {
     // Currently camera — switch to screen share
+    if (!supportsScreenShare) {
+      setStatus('Screen sharing is not supported on this browser/device.');
+      return;
+    }
     try {
-      const screenStr = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: 'always' },
-        audio: true
-      });
+      const screenStr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       const newVideoTrack = screenStr.getVideoTracks()[0];
       const newAudioTrack = screenStr.getAudioTracks().length ? screenStr.getAudioTracks()[0] : null;
 
@@ -1572,9 +1628,40 @@ streamToggleScreenBtn.addEventListener('click', async () => {
       remoteVideo.style.transform = '';
       streamToggleScreenBtn.classList.add('active-share');
       streamToggleCamBtn.classList.add('hidden');
-    } catch { setStatus('Screen share denied.'); }
+    } catch(e) { if (e.name !== 'AbortError') setStatus('Screen share denied.'); }
   }
 });
+
+// ── Stream flip camera (mobile front/rear toggle during live) ─────────────────
+if (streamFlipCamBtn) {
+  streamFlipCamBtn.addEventListener('click', flipStreamCamera);
+}
+
+async function flipStreamCamera() {
+  if (!isStreaming || !liveStream || streamMode === 'screen') return;
+  const newFacing = currentFacingMode === 'user' ? 'environment' : 'user';
+  let newCamStream;
+  try {
+    newCamStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: newFacing },
+      audio: false
+    });
+  } catch(e) {
+    setStatus('Could not switch camera.');
+    return;
+  }
+  currentFacingMode = newFacing;
+  const newVideoTrack = newCamStream.getVideoTracks()[0];
+  for (const [, pc] of streamViewerPCs) {
+    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) await sender.replaceTrack(newVideoTrack);
+  }
+  liveStream.getVideoTracks().forEach(t => t.stop());
+  const audioTracks = liveStream.getAudioTracks();
+  liveStream = new MediaStream([newVideoTrack, ...audioTracks]);
+  remoteVideo.srcObject = liveStream;
+  remoteVideo.style.transform = newFacing === 'user' ? 'scaleX(-1)' : '';
+}
 
 // ── Stream invite (streamer invites a viewer) ─────────────────────────────────
 streamInviteBtn.addEventListener('click', showStreamInviteModal);
@@ -1991,4 +2078,44 @@ function stopRingtone() {
   document.addEventListener('mouseup', () => {
     if (dragging) { dragging = false; pip.style.cursor = 'grab'; }
   });
+
+  // ── Touch support for PiP drag ───────────────────────────────────
+  pip.addEventListener('touchstart', (e) => {
+    const touch = e.touches[0];
+    dragging = true;
+    startX = touch.clientX; startY = touch.clientY;
+    const rect = pip.getBoundingClientRect();
+    origX = rect.left; origY = rect.top;
+    pip.style.transition = 'none';
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - startX, dy = touch.clientY - startY;
+    pip.style.position = 'absolute';
+    pip.style.left = (origX - pip.parentElement.getBoundingClientRect().left + dx) + 'px';
+    pip.style.top = (origY - pip.parentElement.getBoundingClientRect().top + dy) + 'px';
+    pip.style.bottom = 'auto';
+    pip.style.right = 'auto';
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchend', () => { dragging = false; });
+})();
+
+// ── DEVICE CAPABILITY SETUP ───────────────────────────────────────────────────
+(function applyDeviceCapabilities() {
+  // Hide screen share buttons on unsupported browsers/devices
+  if (!supportsScreenShare) {
+    toggleScreenBtn.classList.add('hidden');
+    streamToggleScreenBtn.classList.add('hidden');
+    if (liveScreenBtn) liveScreenBtn.classList.add('hidden');
+  }
+  // Show flip camera button on mobile (has front/rear cameras)
+  if (isMobile) {
+    if (flipCameraBtn) flipCameraBtn.classList.remove('hidden');
+    if (streamFlipCamBtn) streamFlipCamBtn.classList.remove('hidden');
+  }
 })();
