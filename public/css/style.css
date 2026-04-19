@@ -433,8 +433,93 @@ html, body {
   position: relative; border-radius: 10px;
   overflow: hidden; background: var(--surface);
   border: 1px solid var(--border);
-  min-height: 0;
+  min-height: 0; cursor: pointer;
+  transition: border-color 0.2s;
 }
+
+.group-video-tile:hover { border-color: var(--border-bright); }
+
+/* ── Focused / expanded tile (Discord-style) ─────────────── */
+.video-layout-group.has-focused {
+  grid-template-columns: 1fr !important;
+  grid-template-rows: 1fr !important;
+}
+
+.video-layout-group.has-focused .group-video-tile:not(.tile-focused) {
+  display: none;
+}
+
+.group-video-tile.tile-focused {
+  cursor: default; border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 40px rgba(0,255,136,0.12);
+}
+
+/* ── Exit button (shown when a tile is expanded) ──────────── */
+.tile-exit-btn {
+  position: absolute; top: 12px; right: 12px; z-index: 30;
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.65); border: 1px solid rgba(255,255,255,0.25);
+  color: #fff; cursor: pointer; padding: 0;
+  backdrop-filter: blur(6px);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+}
+
+.tile-exit-btn svg { width: 14px; height: 14px; pointer-events: none; }
+
+.tile-exit-btn:hover {
+  background: rgba(220,50,80,0.75); border-color: rgba(220,50,80,0.5);
+  transform: scale(1.1);
+}
+
+/* ── Fullscreen button (shown when a tile is expanded) ───── */
+.tile-fullscreen-btn {
+  position: absolute; top: 12px; left: 12px; z-index: 30;
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.65); border: 1px solid rgba(255,255,255,0.25);
+  color: #fff; cursor: pointer; padding: 0;
+  backdrop-filter: blur(6px);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+}
+
+.tile-fullscreen-btn svg { width: 14px; height: 14px; pointer-events: none; }
+
+.tile-fullscreen-btn:hover {
+  background: rgba(0,212,255,0.55); border-color: rgba(0,212,255,0.5);
+  transform: scale(1.1);
+}
+
+/* ── Group Pagination Nav Buttons ────────────────────────── */
+.group-nav-btn {
+  position: absolute; top: 50%; transform: translateY(calc(-50% - 20px));
+  z-index: 25; width: 36px; height: 72px;
+  background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px; color: rgba(255,255,255,0.85);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(6px); padding: 0;
+  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+
+.group-nav-btn svg { width: 20px; height: 20px; pointer-events: none; }
+
+.group-nav-btn:hover {
+  background: rgba(0,255,136,0.18); border-color: rgba(0,255,136,0.45);
+}
+
+.group-nav-prev { left: 6px; }
+.group-nav-next { right: 6px; }
+
+/* ── Group Page Indicator ─────────────────────────────────── */
+.group-page-indicator {
+  position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%);
+  z-index: 25; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px; padding: 4px 12px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px;
+  color: rgba(255,255,255,0.6); backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+.group-page-indicator.hidden { display: none; }
 
 .group-video-tile video {
   width: 100%; height: 100%; object-fit: cover; display: block;
@@ -1047,4 +1132,15 @@ html, body {
   .video-panel { padding: 4px; gap: 4px; }
   .pip-container { width: 100px; height: 75px; }
   .go-live-fab, .stop-live-fab { bottom: 60px; }
+}
+
+/* ── Group nav / fullscreen responsive tweaks ─────────────── */
+@media (max-width: 768px) {
+  .group-nav-btn { width: 28px; height: 56px; }
+  .group-nav-btn svg { width: 16px; height: 16px; }
+  .group-nav-prev { left: 2px; }
+  .group-nav-next { right: 2px; }
+  .group-page-indicator { font-size: 9px; bottom: 68px; }
+  .tile-fullscreen-btn, .tile-exit-btn { width: 28px; height: 28px; }
+  .tile-fullscreen-btn svg, .tile-exit-btn svg { width: 12px; height: 12px; }
 }

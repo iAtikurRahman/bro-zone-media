@@ -42,6 +42,9 @@ let currentRoomId      = null;
 let lastLeftRoomId     = null; // track last group room for rejoin
 let groupPeers         = new Map(); // socketId → { pc, email, remoteDescSet, iceBuffer }
 let pendingGroupInvite = null; // { roomId, from, inviterEmail }
+let expandedTileId     = null; // id of the currently focused/expanded group tile
+let groupPage          = 0;    // current pagination page (0-based)
+const GROUP_PAGE_SIZE  = 4;    // tiles visible per page
 
 // ── LIVE STREAMING STATE ──────────────────────────────────────────────────────
 let pendingOpenParticipantModal = false; // deferred until group:created arrives
@@ -78,6 +81,9 @@ const userCount        = document.getElementById('user-count');
 const noCallState      = document.getElementById('no-call-state');
 const video1to1        = document.getElementById('video-1to1');
 const videoGroup       = document.getElementById('video-group');
+const groupPrevBtn     = document.getElementById('group-prev-btn');
+const groupNextBtn     = document.getElementById('group-next-btn');
+const groupPageIndicator = document.getElementById('group-page-indicator');
 const remoteVideo      = document.getElementById('remote-video');
 const localVideo       = document.getElementById('local-video');
 const remoteLabel      = document.getElementById('remote-label');
@@ -1283,13 +1289,57 @@ addParticipantBtn.addEventListener('click', () => {
     });
     peerConnection = null;
     inCallWithSocketId = null;
-    // Defer modal until server confirms the room (currentRoomId is set in group:created)
+
+    // Immediately switch to group grid — no split layout while waiting for server
+    createGroupTileForExistingPeer(partnerSocket, partnerEmail);
+    switchToGroupLayout();
+
+    // Defer invite modal until server confirms the room (currentRoomId is set in group:created)
     pendingOpenParticipantModal = true;
     return; // modal will open inside group:created handler
   }
 
   showAddParticipantModal();
 });
+
+// Create a group tile for a peer that was already in a 1-to-1 call (no new PC needed)
+function createGroupTileForExistingPeer(socketId, email) {
+  if (document.getElementById('group-tile-' + socketId)) return;
+
+  const tile = document.createElement('div');
+  tile.className = 'group-video-tile';
+  tile.id = 'group-tile-' + socketId;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'group-tile-avatar';
+  avatar.innerHTML =
+    '<div class="avatar-circle">' + escapeHtml(email ? email.charAt(0).toUpperCase() : '?') + '</div>' +
+    '<div class="avatar-name">' + escapeHtml(email) + '</div>';
+  tile.appendChild(avatar);
+
+  const vid = document.createElement('video');
+  vid.autoplay = true;
+  vid.playsInline = true;
+  // Reuse the existing remote stream from the 1-to-1 call
+  if (remoteVideo.srcObject) {
+    vid.srcObject = remoteVideo.srcObject;
+    vid.style.display = '';
+    avatar.style.display = 'none';
+  } else {
+    vid.style.display = 'none';
+  }
+  tile.appendChild(vid);
+
+  const label = document.createElement('div');
+  label.className = 'video-label';
+  label.textContent = email;
+  tile.appendChild(label);
+
+  tile.addEventListener('dblclick', () => focusGroupTile(tile));
+
+  videoGroup.appendChild(tile);
+  updateGroupLayout();
+}
 
 function showAddParticipantModal() {
   const available = onlineUsersList.filter(u => {
@@ -1327,6 +1377,17 @@ function showAddParticipantModal() {
 
 closeInviteModal.addEventListener('click', () => {
   addPartModal.classList.add('hidden');
+});
+
+// ── Group Pagination ──────────────────────────────────────────────────────────
+groupPrevBtn.addEventListener('click', () => {
+  if (groupPage > 0) { groupPage--; updateGroupLayout(); }
+});
+
+groupNextBtn.addEventListener('click', () => {
+  const tiles = videoGroup.querySelectorAll('.group-video-tile');
+  const totalPages = Math.ceil(tiles.length / GROUP_PAGE_SIZE);
+  if (groupPage < totalPages - 1) { groupPage++; updateGroupLayout(); }
 });
 
 // ── Accept Group Invite ───────────────────────────────────────────────────────
@@ -1379,6 +1440,7 @@ function createGroupPeerObj(socketId, email) {
     tile.appendChild(label);
 
     videoGroup.appendChild(tile);
+    tile.addEventListener('dblclick', () => focusGroupTile(tile));
     updateGroupLayout();
   }
 
@@ -1448,6 +1510,7 @@ async function createGroupPeerConnection(socketId, email, createOffer) {
 }
 
 function removeGroupPeer(socketId) {
+  if (expandedTileId === 'group-tile-' + socketId) unfocusGroupTile();
   const peer = groupPeers.get(socketId);
   if (peer) { peer.pc.close(); groupPeers.delete(socketId); }
   const tile = document.getElementById('group-tile-' + socketId);
@@ -1461,16 +1524,142 @@ function switchToGroupLayout() {
   videoGroup.classList.remove('hidden');
   callControls.classList.remove('hidden');
   updateGroupLayout();
+  // Attach double-click expand to the local tile (once)
+  const localTile = document.getElementById('group-local-tile');
+  if (localTile && !localTile.dataset.dblclickBound) {
+    localTile.addEventListener('dblclick', () => focusGroupTile(localTile));
+    localTile.dataset.dblclickBound = '1';
+  }
   if (window._switchToVideoPanel) window._switchToVideoPanel();
 }
 
-function updateGroupLayout() {
-  const totalTiles = groupPeers.size + 1; // +1 for local
-  for (let i = 1; i <= 9; i++) videoGroup.classList.remove('p-' + i);
-  videoGroup.classList.add('p-' + Math.min(totalTiles, 9));
+// ── Group tile expand / collapse (Discord-style) ──────────────────────────────
+function focusGroupTile(tileEl) {
+  if (tileEl.classList.contains('tile-focused')) return;
+  // Collapse any currently focused tile first
+  unfocusGroupTile();
+
+  tileEl.classList.add('tile-focused');
+  videoGroup.classList.add('has-focused');
+  expandedTileId = tileEl.id;
+
+  // Add exit button
+  const exitBtn = document.createElement('button');
+  exitBtn.className = 'tile-exit-btn';
+  exitBtn.title = 'Return to grid view';
+  exitBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">' +
+    '<line x1="18" y1="6" x2="6" y2="18"/>' +
+    '<line x1="6" y1="6" x2="18" y2="18"/>' +
+    '</svg>';
+  exitBtn.addEventListener('click', (e) => { e.stopPropagation(); unfocusGroupTile(); });
+  tileEl.appendChild(exitBtn);
+
+  // Add fullscreen button
+  const fsBtn = document.createElement('button');
+  fsBtn.className = 'tile-fullscreen-btn';
+  fsBtn.title = 'Fullscreen';
+  fsBtn.innerHTML = FS_ICON_ENTER;
+  fsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleTileFullscreen(tileEl); });
+  tileEl.appendChild(fsBtn);
 }
 
+function unfocusGroupTile() {
+  // Exit fullscreen if active
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(() => {});
+  }
+  const focused = videoGroup.querySelector('.tile-focused');
+  if (focused) {
+    const exitB = focused.querySelector('.tile-exit-btn');
+    if (exitB) exitB.remove();
+    const fsB = focused.querySelector('.tile-fullscreen-btn');
+    if (fsB) fsB.remove();
+    focused.classList.remove('tile-focused');
+  }
+  videoGroup.classList.remove('has-focused');
+  expandedTileId = null;
+  updateGroupLayout();
+}
+
+function updateGroupLayout() {
+  // In focused/expanded mode the CSS handles tile visibility; only hide nav.
+  if (videoGroup.classList.contains('has-focused')) {
+    groupPrevBtn.classList.add('hidden');
+    groupNextBtn.classList.add('hidden');
+    groupPageIndicator.classList.add('hidden');
+    return;
+  }
+
+  const tiles = Array.from(videoGroup.querySelectorAll('.group-video-tile'));
+  const totalTiles = tiles.length;
+  const totalPages = Math.max(1, Math.ceil(totalTiles / GROUP_PAGE_SIZE));
+
+  // Clamp current page
+  if (groupPage >= totalPages) groupPage = totalPages - 1;
+  if (groupPage < 0) groupPage = 0;
+
+  const start = groupPage * GROUP_PAGE_SIZE;
+  const end   = start + GROUP_PAGE_SIZE;
+
+  tiles.forEach((tile, i) => {
+    tile.style.display = (i >= start && i < end) ? '' : 'none';
+  });
+
+  const visibleCount = Math.min(GROUP_PAGE_SIZE, totalTiles - start);
+  for (let i = 1; i <= 9; i++) videoGroup.classList.remove('p-' + i);
+  videoGroup.classList.add('p-' + Math.min(visibleCount, 9));
+
+  const showNav = totalTiles > GROUP_PAGE_SIZE;
+  groupPrevBtn.classList.toggle('hidden', !showNav || groupPage === 0);
+  groupNextBtn.classList.toggle('hidden', !showNav || groupPage >= totalPages - 1);
+  groupPageIndicator.classList.toggle('hidden', !showNav);
+  if (showNav) {
+    groupPageIndicator.textContent = (groupPage + 1) + ' / ' + totalPages;
+  }
+}
+
+// ── Group tile fullscreen ─────────────────────────────────────────────────────
+const FS_ICON_ENTER =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+  '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>' +
+  '<line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>' +
+  '</svg>';
+const FS_ICON_EXIT =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+  '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>' +
+  '<line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>' +
+  '</svg>';
+
+function toggleTileFullscreen(tileEl) {
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    const req = tileEl.requestFullscreen || tileEl.webkitRequestFullscreen;
+    if (req) req.call(tileEl);
+  }
+}
+
+// Update fullscreen button icon on change
+document.addEventListener('fullscreenchange', () => {
+  const btn = document.querySelector('.tile-fullscreen-btn');
+  if (!btn) return;
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  btn.innerHTML = isFs ? FS_ICON_EXIT : FS_ICON_ENTER;
+  btn.title = isFs ? 'Exit fullscreen' : 'Fullscreen';
+});
+document.addEventListener('webkitfullscreenchange', () => {
+  const btn = document.querySelector('.tile-fullscreen-btn');
+  if (!btn) return;
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  btn.innerHTML = isFs ? FS_ICON_EXIT : FS_ICON_ENTER;
+  btn.title = isFs ? 'Exit fullscreen' : 'Fullscreen';
+});
+
 function hangupGroupCall() {
+  unfocusGroupTile();
   stopScreenShare();
   for (const [sid, peer] of groupPeers) {
     peer.pc.close();
@@ -1495,6 +1684,10 @@ function hangupGroupCall() {
   groupLocalVideo.classList.remove('mirror-self');
   callControls.classList.add('hidden');
   videoGroup.classList.add('hidden');
+  groupPrevBtn.classList.add('hidden');
+  groupNextBtn.classList.add('hidden');
+  groupPageIndicator.classList.add('hidden');
+  groupPage = 0;
   noCallState.classList.remove('hidden');
   micEnabled = true; camEnabled = true;
   toggleMicBtn.classList.remove('muted');
